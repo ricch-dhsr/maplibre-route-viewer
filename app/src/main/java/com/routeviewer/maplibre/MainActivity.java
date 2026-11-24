@@ -10,6 +10,8 @@ import android.view.Gravity;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
 import android.widget.TextView;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -47,13 +49,30 @@ public class MainActivity extends Activity {
     private MapView mapView;
     private TextView status, offlineStatus;
     private Button downloadButton;
+    private Spinner regionPicker;
+    private final java.util.HashMap<String, OfflineRegion> savedRegions = new java.util.HashMap<>();
+    private int activeRegionIndex = -1;
     private OfflineRegion offlineRegion;
     private boolean downloading;
 
     private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
-    private static final String REGION_ID = "orange-athol-test-v02";
-    private static final double SOUTH = 42.53, NORTH = 42.66;
-    private static final double WEST = -72.40, EAST = -72.15;
+    private static final String[] REGION_NAMES = {
+        "Orange/Athol (existing test)", "Western MA pilot", "Central MA pilot",
+        "Eastern MA pilot", "Cape & Islands pilot"
+    };
+    private static final String[] REGION_IDS = {
+        "orange-athol-test-v02", "western-ma-pilot-v04", "central-ma-pilot-v04",
+        "eastern-ma-pilot-v04", "cape-islands-pilot-v04"
+    };
+    // Pilot rectangles, NOT verified complete Massachusetts coverage.
+    // Coordinates: south, north, west, east.
+    private static final double[][] AREAS = {
+        {42.53, 42.66, -72.40, -72.15},
+        {42.00, 42.80, -73.50, -72.45},
+        {42.00, 42.80, -72.45, -71.55},
+        {42.00, 42.80, -71.55, -70.55},
+        {41.20, 42.05, -71.30, -69.90}
+    };
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -66,7 +85,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/0.3 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/0.4 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -76,7 +95,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v0.3 • offline pilot");
+        status.setText("MapLibre Route Viewer v0.4 • regional pilot");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -85,14 +104,26 @@ public class MainActivity extends Activity {
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setBackgroundColor(0xDD182A36);
+        regionPicker = new Spinner(this);
+        ArrayAdapter<String> regionAdapter = new ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_dropdown_item, REGION_NAMES);
+        regionPicker.setAdapter(regionAdapter);
+        controls.addView(regionPicker);
         downloadButton = new Button(this);
-        downloadButton.setText("Download Orange/Athol Test Map");
+        downloadButton.setText("Download selected region");
         offlineStatus = new TextView(this);
         offlineStatus.setTextColor(Color.WHITE);
         offlineStatus.setPadding(18, 4, 18, 12);
         offlineStatus.setText("Checking offline maps...");
         controls.addView(downloadButton);
         controls.addView(offlineStatus);
+        regionPicker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent,
+                    android.view.View view, int position, long id) {
+                if (!downloading) refreshSelectedRegion();
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        });
         frame.addView(controls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         setContentView(frame);
         downloadButton.setOnClickListener(v -> startOfflineDownload());
@@ -110,37 +141,41 @@ public class MainActivity extends Activity {
     }
 
     private void checkOfflineRegions() {
-        OfflineManager.getInstance(this).listOfflineRegions(new OfflineManager.ListOfflineRegionsCallback() {
-            @Override public void onList(OfflineRegion[] regions) {
-                if (regions != null) for (OfflineRegion region : regions) {
-                    String metadata = new String(region.getMetadata(), StandardCharsets.UTF_8);
-                    if (REGION_ID.equals(metadata)) {
-                        offlineRegion = region;
-                        checkRegionStatus(region);
-                        return;
+        OfflineManager.getInstance(this).listOfflineRegions(
+            new OfflineManager.ListOfflineRegionsCallback() {
+                @Override public void onList(OfflineRegion[] regions) {
+                    savedRegions.clear();
+                    if (regions != null) for (OfflineRegion region : regions) {
+                        String metadata = new String(region.getMetadata(), StandardCharsets.UTF_8);
+                        savedRegions.put(metadata, region);
                     }
+                    refreshSelectedRegion();
                 }
-                offlineStatus.setText("Test map not downloaded");
-            }
-            @Override public void onError(String error) {
-                offlineStatus.setText("Offline database error: " + error);
-            }
-        });
+                @Override public void onError(String error) {
+                    offlineStatus.setText("Offline database error: " + error);
+                }
+            });
     }
 
-    private void checkRegionStatus(OfflineRegion region) {
+    private void refreshSelectedRegion() {
+        int index = regionPicker.getSelectedItemPosition();
+        if (index < 0 || index >= REGION_IDS.length) return;
+        OfflineRegion region = savedRegions.get(REGION_IDS[index]);
+        downloadButton.setEnabled(true);
+        downloadButton.setText(region == null ? "Download selected region" : "Check / resume region");
+        if (region == null) {
+            offlineStatus.setText(REGION_NAMES[index] + ": not downloaded (zoom 9–12 pilot)");
+            return;
+        }
         region.getStatus(new OfflineRegion.OfflineRegionStatusCallback() {
-            @Override public void onStatus(OfflineRegionStatus s) {
-                if (s.isComplete()) {
-                    offlineStatus.setText("Offline test map saved: " + s.getCompletedTileCount()
-                        + " tiles; " + formatSize(s.getCompletedResourceSize()));
-                    downloadButton.setText("Offline map saved");
-                    downloadButton.setEnabled(false);
-                } else {
-                    offlineStatus.setText("Incomplete map: " + s.getCompletedResourceCount()
-                        + " resources; " + formatSize(s.getCompletedResourceSize()));
-                    downloadButton.setText("Resume offline download");
-                }
+            @Override public void onStatus(OfflineRegionStatus st) {
+                if (index != regionPicker.getSelectedItemPosition() || downloading) return;
+                offlineStatus.setText(REGION_NAMES[index] + ": " +
+                    (st.isComplete() ? "COMPLETE" : "incomplete") + " • " +
+                    st.getCompletedTileCount() + " tiles • " +
+                    formatSize(st.getCompletedResourceSize()));
+                downloadButton.setText(st.isComplete() ? "Region already saved" : "Resume selected region");
+                downloadButton.setEnabled(!st.isComplete());
             }
             @Override public void onError(String error) {
                 offlineStatus.setText("Status error: " + error);
@@ -150,61 +185,94 @@ public class MainActivity extends Activity {
 
     private void startOfflineDownload() {
         if (downloading) return;
+        int index = regionPicker.getSelectedItemPosition();
+        if (index < 0 || index >= REGION_IDS.length) return;
         downloading = true;
+        activeRegionIndex = index;
+        regionPicker.setEnabled(false);
         downloadButton.setEnabled(false);
-        offlineStatus.setText("Preparing offline download...");
-        if (offlineRegion != null) { activateRegion(offlineRegion); return; }
+        offlineStatus.setText("Preparing " + REGION_NAMES[index] + "...");
+        OfflineRegion existing = savedRegions.get(REGION_IDS[index]);
+        if (existing != null) {
+            existing.getStatus(new OfflineRegion.OfflineRegionStatusCallback() {
+                @Override public void onStatus(OfflineRegionStatus st) {
+                    if (st.isComplete()) {
+                        downloading = false;
+                        activeRegionIndex = -1;
+                        regionPicker.setEnabled(true);
+                        refreshSelectedRegion();
+                    } else {
+                        activateRegion(existing, index);
+                    }
+                }
+                @Override public void onError(String error) {
+                    finishWithError("Status error: " + error);
+                }
+            });
+            return;
+        }
+
+        double[] a = AREAS[index];
         LatLngBounds bounds = new LatLngBounds.Builder()
-            .include(new LatLng(SOUTH, WEST)).include(new LatLng(NORTH, EAST)).build();
+            .include(new LatLng(a[0], a[2]))
+            .include(new LatLng(a[1], a[3])).build();
         OfflineTilePyramidRegionDefinition definition =
             new OfflineTilePyramidRegionDefinition(STYLE_URL, bounds, 9.0, 12.0, 1.0f, false);
         OfflineManager.getInstance(this).createOfflineRegion(definition,
-            REGION_ID.getBytes(StandardCharsets.UTF_8),
+            REGION_IDS[index].getBytes(StandardCharsets.UTF_8),
             new OfflineManager.CreateOfflineRegionCallback() {
                 @Override public void onCreate(OfflineRegion region) {
-                    offlineRegion = region;
-                    activateRegion(region);
+                    savedRegions.put(REGION_IDS[index], region);
+                    activateRegion(region, index);
                 }
                 @Override public void onError(String error) {
-                    downloading = false;
-                    downloadButton.setEnabled(true);
-                    offlineStatus.setText("Create error: " + error);
+                    finishWithError("Create error: " + error);
                 }
             });
     }
 
-    private void activateRegion(OfflineRegion region) {
+    private void finishWithError(String message) {
+        downloading = false;
+        activeRegionIndex = -1;
+        regionPicker.setEnabled(true);
+        downloadButton.setEnabled(true);
+        offlineStatus.setText(message);
+    }
+
+    private void activateRegion(OfflineRegion region, int index) {
         region.setObserver(new OfflineRegion.OfflineRegionObserver() {
-            @Override public void onStatusChanged(OfflineRegionStatus s) {
-                long tiles = s.getCompletedTileCount();
-                long bytes = s.getCompletedResourceSize();
-                if (s.isComplete()) {
+            @Override public void onStatusChanged(OfflineRegionStatus st) {
+                if (activeRegionIndex != index) return;
+                long tiles = st.getCompletedTileCount();
+                long bytes = st.getCompletedResourceSize();
+                if (st.isComplete()) {
                     region.setDownloadState(OfflineRegion.STATE_INACTIVE);
                     downloading = false;
-                    offlineStatus.setText("Offline map complete: " + tiles + " tiles; " + formatSize(bytes));
-                    downloadButton.setText("Offline map saved");
+                    activeRegionIndex = -1;
+                    regionPicker.setEnabled(true);
+                    offlineStatus.setText(REGION_NAMES[index] + " COMPLETE: " +
+                        tiles + " tiles • " + formatSize(bytes));
+                    downloadButton.setText("Region already saved");
                     downloadButton.setEnabled(false);
                 } else if (tiles >= 2900 || bytes >= 48L * 1024 * 1024) {
                     region.setDownloadState(OfflineRegion.STATE_INACTIVE);
-                    downloading = false;
-                    offlineStatus.setText("Stopped near download limit: " + tiles
-                        + " tiles; " + formatSize(bytes));
-                    downloadButton.setText("Download limit reached");
+                    finishWithError("Stopped near per-download limit: " +
+                        tiles + " tiles • " + formatSize(bytes));
                     downloadButton.setEnabled(false);
                 } else {
-                    offlineStatus.setText("Downloading: " + s.getCompletedResourceCount()
-                        + " / " + s.getRequiredResourceCount() + " resources; "
-                        + tiles + " tiles; " + formatSize(bytes));
+                    offlineStatus.setText(REGION_NAMES[index] + ": " +
+                        st.getCompletedResourceCount() + " / " +
+                        st.getRequiredResourceCount() + " resources • " +
+                        tiles + " tiles • " + formatSize(bytes));
                 }
             }
             @Override public void onError(OfflineRegionError error) {
-                offlineStatus.setText("Download error: " + error.getMessage());
+                region.setDownloadState(OfflineRegion.STATE_INACTIVE);
+                finishWithError("Download error: " + error.getMessage());
             }
             @Override public void mapboxTileCountLimitExceeded(long limit) {
                 region.setDownloadState(OfflineRegion.STATE_INACTIVE);
-                downloading = false;
-                downloadButton.setEnabled(false);
-                offlineStatus.setText("SDK tile limit: " + limit);
+                finishWithError("SDK tile limit: " + limit);
             }
         });
         region.setDownloadState(OfflineRegion.STATE_ACTIVE);

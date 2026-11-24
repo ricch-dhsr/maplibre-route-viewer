@@ -26,7 +26,6 @@ import org.maplibre.geojson.Feature;
 import org.maplibre.geojson.FeatureCollection;
 import org.maplibre.geojson.LineString;
 import org.maplibre.geojson.Point;
-import org.maplibre.android.style.Style;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;

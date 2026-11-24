@@ -34,7 +34,7 @@ import java.util.List;
 public class MainActivity extends Activity {
     private MapView mapView;
     private TextView status;
-    private static final String STYLE_URL = "https://demotiles.maplibre.org/style.json";
+    private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);

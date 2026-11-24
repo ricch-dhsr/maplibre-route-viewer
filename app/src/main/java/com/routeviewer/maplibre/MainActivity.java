@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
             line.withProperties(PropertyFactory.lineColor("#1769AA"), PropertyFactory.lineWidth(4f));
             style.addLayerBelow(line, "numbered-stops");
         }
-        map.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(bounds.build(), 90), 0);
+        map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(bounds.build(), 90));
         status.setText("" + stops.length() + " numbered stops • overlap enabled • demo route");
     }
 

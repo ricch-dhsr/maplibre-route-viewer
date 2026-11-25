@@ -68,6 +68,9 @@ public class MainActivity extends Activity {
     private int activeRegionIndex = -1;
     private OfflineRegion offlineRegion;
     private boolean downloading;
+    private long downloadStart;
+    private long initialBytes = -1;
+    private OfflineRegionStatus lastDownloadStatus;
     private MapLibreMap readyMap;
     private Style readyStyle;
     private boolean demoRouteShown;
@@ -75,11 +78,11 @@ public class MainActivity extends Activity {
     private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
     private static final String[] REGION_NAMES = {
         "Athol high-detail test (z9-16)", "Greenfield detail test (z9-16)", "Western MA pilot", "Central MA pilot",
-        "Eastern MA pilot", "Cape & Islands pilot"
+        "Eastern MA pilot", "Cape & Islands pilot", "North Quabbin measurement (z9-16)"
     };
     private static final String[] REGION_IDS = {
         "athol-detail-test-v05", "greenfield-detail-test-v07", "western-ma-pilot-v04", "central-ma-pilot-v04",
-        "eastern-ma-pilot-v04", "cape-islands-pilot-v04"
+        "eastern-ma-pilot-v04", "cape-islands-pilot-v04", "north-quabbin-measurement-v12"
     };
     // Pilot rectangles, NOT verified complete Massachusetts coverage.
     // Coordinates: south, north, west, east.
@@ -89,7 +92,8 @@ public class MainActivity extends Activity {
         {42.00, 42.80, -73.50, -72.45},
         {42.00, 42.80, -72.45, -71.55},
         {42.00, 42.80, -71.55, -70.55},
-        {41.20, 42.05, -71.30, -69.90}
+        {41.20, 42.05, -71.30, -69.90},
+        {42.48, 42.63, -72.45, -72.30}
     };
 
     @Override public void onCreate(Bundle saved) {
@@ -103,7 +107,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/1.1 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/1.2 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -113,7 +117,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.1 • house-number diagnostics");
+        status.setText("MapLibre Route Viewer v1.2 • house-number diagnostics");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -257,7 +261,7 @@ public class MainActivity extends Activity {
         int addressProperties = 0;
         try {
             LatLng center = readyMap.getCameraPosition().target;
-            report.append("MAPLIBRE HOUSE NUMBER DIAGNOSTICS v1.1\\n");
+            report.append("MAPLIBRE HOUSE NUMBER DIAGNOSTICS v1.2\\n");
             report.append("Center: ").append(center.getLatitude()).append(", ")
                 .append(center.getLongitude()).append("\\n");
             report.append("Zoom: ").append(readyMap.getCameraPosition().zoom).append("\\n");
@@ -380,7 +384,7 @@ public class MainActivity extends Activity {
         downloadButton.setEnabled(true);
         downloadButton.setText(region == null ? "Download selected region" : "Check / resume region");
         if (region == null) {
-            offlineStatus.setText(REGION_NAMES[index] + ": not downloaded (zoom " + (index <= 1 ? "9–16" : "9–12") + ")");
+            offlineStatus.setText(REGION_NAMES[index] + ": not downloaded (zoom " + ((index <= 1 || index == 6) ? "9–16" : "9–12") + ")");
             return;
         }
         region.getStatus(new OfflineRegion.OfflineRegionStatusCallback() {
@@ -390,7 +394,7 @@ public class MainActivity extends Activity {
                     (st.isComplete() ? "COMPLETE" : "incomplete") + " • " +
                     st.getCompletedTileCount() + " tiles • " +
                     formatSize(st.getCompletedResourceSize()) +
-                    "\nConfigured zoom 9–" + (index <= 1 ? "16" : "12") +
+                    "\nConfigured zoom 9–" + ((index <= 1 || index == 6) ? "16" : "12") +
                     " • resources " + st.getCompletedResourceCount() + "/" +
                     st.getRequiredResourceCount() +
                     "\nSDK tile count is NOT the theoretical XYZ tile count.");
@@ -408,6 +412,9 @@ public class MainActivity extends Activity {
         int index = regionPicker.getSelectedItemPosition();
         if (index < 0 || index >= REGION_IDS.length) return;
         downloading = true;
+        downloadStart = android.os.SystemClock.elapsedRealtime();
+        initialBytes = -1;
+        lastDownloadStatus = null;
         activeRegionIndex = index;
         regionPicker.setEnabled(false);
         downloadButton.setEnabled(false);
@@ -422,6 +429,7 @@ public class MainActivity extends Activity {
                         regionPicker.setEnabled(true);
                         refreshSelectedRegion();
                     } else {
+                        initialBytes = st.getCompletedResourceSize();
                         activateRegion(existing, index);
                     }
                 }
@@ -438,12 +446,13 @@ public class MainActivity extends Activity {
             .include(new LatLng(a[1], a[3])).build();
         OfflineTilePyramidRegionDefinition definition =
             new OfflineTilePyramidRegionDefinition(STYLE_URL, bounds,
-                9.0, index <= 1 ? 16.0 : 12.0, 1.0f, false);
+                9.0, (index <= 1 || index == 6) ? 16.0 : 12.0, 1.0f, false);
         OfflineManager.getInstance(this).createOfflineRegion(definition,
             REGION_IDS[index].getBytes(StandardCharsets.UTF_8),
             new OfflineManager.CreateOfflineRegionCallback() {
                 @Override public void onCreate(OfflineRegion region) {
                     savedRegions.put(REGION_IDS[index], region);
+                    initialBytes = 0;
                     activateRegion(region, index);
                 }
                 @Override public void onError(String error) {
@@ -453,6 +462,7 @@ public class MainActivity extends Activity {
     }
 
     private void finishWithError(String message) {
+        if (activeRegionIndex >= 0) saveDownloadReport(activeRegionIndex, lastDownloadStatus, message);
         downloading = false;
         activeRegionIndex = -1;
         regionPicker.setEnabled(true);
@@ -464,9 +474,11 @@ public class MainActivity extends Activity {
         region.setObserver(new OfflineRegion.OfflineRegionObserver() {
             @Override public void onStatusChanged(OfflineRegionStatus st) {
                 if (activeRegionIndex != index) return;
+                lastDownloadStatus = st;
                 long tiles = st.getCompletedTileCount();
                 long bytes = st.getCompletedResourceSize();
                 if (st.isComplete()) {
+                    saveDownloadReport(index, st, "COMPLETE");
                     region.setDownloadState(OfflineRegion.STATE_INACTIVE);
                     downloading = false;
                     activeRegionIndex = -1;
@@ -475,11 +487,11 @@ public class MainActivity extends Activity {
                         tiles + " SDK tiles • " + formatSize(bytes) +
                         "\nResources " + st.getCompletedResourceCount() + "/" +
                         st.getRequiredResourceCount() +
-                        " • zoom 9–" + (index <= 1 ? "16" : "12") +
+                        " • zoom 9–" + ((index <= 1 || index == 6) ? "16" : "12") +
                         "\nVerify detail offline; tile count may reflect source maxzoom.");
                     downloadButton.setText("Region already saved");
                     downloadButton.setEnabled(false);
-                } else if (tiles >= 2900 || bytes >= 48L * 1024 * 1024) {
+                } else if (tiles >= (index == 6 ? 15000 : 2900) || bytes >= (index == 6 ? 256L : 48L) * 1024 * 1024) {
                     region.setDownloadState(OfflineRegion.STATE_INACTIVE);
                     finishWithError("Stopped near per-download limit: " +
                         tiles + " tiles • " + formatSize(bytes));
@@ -501,6 +513,49 @@ public class MainActivity extends Activity {
             }
         });
         region.setDownloadState(OfflineRegion.STATE_ACTIVE);
+    }
+
+    private void saveDownloadReport(int index, OfflineRegionStatus st, String outcome) {
+        double[] a = AREAS[index];
+        double area = 6371.0 * 6371.0 * Math.toRadians(a[3]-a[2]) * (Math.sin(Math.toRadians(a[1]))-Math.sin(Math.toRadians(a[0])));
+        double seconds = Math.max(0.001, (android.os.SystemClock.elapsedRealtime()-downloadStart)/1000.0);
+        StringBuilder b = new StringBuilder("MAPLIBRE DOWNLOAD REPORT v1.2\n");
+        b.append("Region: ").append(REGION_NAMES[index]).append("\nBounds S,N,W,E: ").append(java.util.Arrays.toString(a));
+        b.append(String.format(Locale.US,"\nArea: %.2f km2\nZoom: 9-%d\nElapsed session seconds: %.2f\n",area,(index <= 1 || index == 6)?16:12,seconds));
+        b.append("Outcome: ").append(outcome).append("\n");
+        if (st != null) {
+            long bytes = st.getCompletedResourceSize();
+            b.append("Resources: ").append(st.getCompletedResourceCount()).append("/").append(st.getRequiredResourceCount()).append("\n");
+            b.append("Required count precise: ").append(st.isRequiredResourceCountPrecise()).append("\n");
+            b.append("SDK tiles: ").append(st.getCompletedTileCount()).append("\nRegion resource bytes: ").append(bytes).append("\n");
+            if(initialBytes >= 0) b.append(String.format(Locale.US,"Session resource growth: %d bytes\nAverage resource growth: %.2f KiB/s\n",Math.max(0,bytes-initialBytes),Math.max(0,bytes-initialBytes)/1024.0/seconds));
+        }
+        b.append("Database files (including sidecars, if present):\n");
+        appendDatabaseFiles(getFilesDir(), b, 3);
+        appendDatabaseFiles(getCacheDir(), b, 3);
+        appendDatabaseFiles(new java.io.File(getApplicationInfo().dataDir,"databases"), b, 3);
+        String result = b.toString();
+        try {
+            ((ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("MapLibre download report",result));
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME,"maplibre_download_"+System.currentTimeMillis()+".txt");
+            values.put(MediaStore.Downloads.MIME_TYPE,"text/plain");
+            values.put(MediaStore.Downloads.RELATIVE_PATH,Environment.DIRECTORY_DOWNLOADS);
+            android.net.Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,values);
+            if(uri == null) throw new Exception("Unable to create report");
+            try(java.io.OutputStream out = getContentResolver().openOutputStream(uri)) { if(out == null) throw new Exception("Unable to open report"); out.write(result.getBytes(StandardCharsets.UTF_8)); }
+            status.setText("Download report saved to Downloads and clipboard");
+        } catch(Exception e) { status.setText("Download report export error: "+e.getMessage()); }
+    }
+
+    private void appendDatabaseFiles(java.io.File dir, StringBuilder b, int depth) {
+        if(dir == null || depth < 0) return;
+        java.io.File[] files = dir.listFiles();
+        if(files == null) return;
+        for(java.io.File f : files) {
+            if(f.isDirectory()) appendDatabaseFiles(f,b,depth-1);
+            else if(f.getName().matches("(?i).*(\\.db|\\.sqlite|\\.sqlite3)(-wal|-shm|-journal)?$")) b.append(f.getAbsolutePath()).append(": ").append(f.length()).append(" bytes\n");
+        }
     }
 
     // Proven Build #10 route rendering retained without behavior changes.

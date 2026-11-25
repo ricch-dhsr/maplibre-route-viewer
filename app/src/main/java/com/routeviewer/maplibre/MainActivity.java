@@ -121,7 +121,8 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         MapLibre.getInstance(this);
-        logDebug("START v1.4.1 "+networkState());
+        org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
+        logDebug("START v1.4.2 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -146,7 +147,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.1 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.2 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -196,7 +197,8 @@ public class MainActivity extends Activity {
             if (i < 0 || i >= AREAS.length) return;
             double[] a = AREAS[i];
             readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
-                .newLatLngZoom(new LatLng((a[0]+a[1])/2, (a[2]+a[3])/2), 15.0));
+                .newLatLngZoom(i == 10 ? new LatLng(41.6525,-70.2881) : new LatLng((a[0]+a[1])/2, (a[2]+a[3])/2), 15.0));
+            hideControls();
         });
         showRouteButton.setOnClickListener(v -> {
             if (readyMap == null || readyStyle == null) return;
@@ -337,7 +339,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.1 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.2 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -940,7 +942,11 @@ public class MainActivity extends Activity {
     }
     private void exportDebug(){
         snapshotDebug("export");
-        mapView.postDelayed(() -> {
+        String currentStyle = readyStyle == null ? "" : readyStyle.getJson();
+        Toast.makeText(this,"Inspecting offline database...",Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            inspectDatabase(currentStyle);
+            runOnUiThread(() -> mapView.postDelayed(() -> {
             String result;
             synchronized(this){result=debugLog.toString();}
             try{
@@ -953,7 +959,77 @@ public class MainActivity extends Activity {
                 try(java.io.OutputStream out=getContentResolver().openOutputStream(uri)){out.write(result.getBytes(StandardCharsets.UTF_8));}
                 Toast.makeText(this,"Debug log saved to Downloads",Toast.LENGTH_LONG).show();
             }catch(Exception e){status.setText("Export error "+e);}
-        },1200);
+        },1200));
+        }).start();
+    }
+
+
+    private void dbQuery(android.database.sqlite.SQLiteDatabase db,StringBuilder b,String sql){
+        b.append("\nSQL ").append(sql).append("\n");
+        try(android.database.Cursor cur=db.rawQuery(sql,null)){
+            b.append(java.util.Arrays.toString(cur.getColumnNames())).append("\n");
+            int rows=0;
+            while(cur.moveToNext() && rows++<100){
+                for(int i=0;i<cur.getColumnCount();i++){
+                    if(i>0)b.append(" | ");
+                    if(cur.getType(i)==android.database.Cursor.FIELD_TYPE_BLOB)b.append("<blob>");
+                    else b.append(cur.getString(i));
+                }
+                b.append("\n");
+            }
+        }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
+    }
+    private void inspectDatabase(String styleJson){
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.2\n");
+        try{
+            JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
+            b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");
+        }catch(Exception e){b.append("Style JSON error ").append(e).append("\n");}
+        java.io.File file=new java.io.File(getFilesDir(),"mbgl-offline.db");
+        try(android.database.sqlite.SQLiteDatabase db=android.database.sqlite.SQLiteDatabase.openDatabase(file.getAbsolutePath(),null,android.database.sqlite.SQLiteDatabase.OPEN_READONLY|android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS)){
+            dbQuery(db,b,"PRAGMA quick_check");
+            dbQuery(db,b,"SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name");
+            dbQuery(db,b,"SELECT url_template,pixel_ratio,z,COUNT(*) AS tiles FROM tiles GROUP BY url_template,pixel_ratio,z ORDER BY url_template,z");
+            dbQuery(db,b,"SELECT url_template,pixel_ratio,z,x,y,length(data) AS bytes FROM tiles ORDER BY z DESC LIMIT 15");
+            dbQuery(db,b,"SELECT region_id,COUNT(*) AS tile_links FROM region_tiles GROUP BY region_id");
+            dbQuery(db,b,"SELECT rt.region_id,t.z,COUNT(*) AS tiles FROM region_tiles rt JOIN tiles t ON t.id=rt.tile_id GROUP BY rt.region_id,t.z ORDER BY rt.region_id,t.z");
+            dbQuery(db,b,"SELECT id,definition FROM regions");
+            dbQuery(db,b,"SELECT kind,COUNT(*) FROM resources GROUP BY kind");
+            dbQuery(db,b,"SELECT url,kind,length(data) AS bytes FROM resources WHERE url LIKE '%style%' OR url LIKE '%tilejson%' OR url LIKE '%/planet%' LIMIT 60");
+            // TileJSON is often compressed in the native cache; decode only small JSON resources.
+            try(android.database.Cursor cur=db.rawQuery("SELECT url,data,compressed FROM resources WHERE kind IN (1,2) AND length(data)<2000000 LIMIT 30",null)){
+                while(cur.moveToNext()){
+                    byte[] bytes=cur.getBlob(1); if(bytes==null)continue;
+                    try{
+                        if(cur.getInt(2)!=0){
+                            java.io.InputStream in=new java.util.zip.InflaterInputStream(new java.io.ByteArrayInputStream(bytes));
+                            ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buf=new byte[4096];int n;
+                            while((n=in.read(buf))!=-1){if(out.size()+n>4000000)throw new Exception("JSON too large");out.write(buf,0,n);}in.close();bytes=out.toByteArray();
+                        }
+                        JSONObject j=new JSONObject(new String(bytes,StandardCharsets.UTF_8));
+                        b.append("CACHED JSON ").append(cur.getString(0)).append(" tiles=").append(j.optJSONArray("tiles")).append(" sources=").append(j.optJSONObject("sources")).append("\n");
+                    }catch(Exception e){b.append("Cached JSON decode ").append(cur.getString(0)).append(" ").append(e).append("\n");}
+                }
+            }catch(Exception e){b.append("Cached JSON query ").append(e).append("\n");}
+            // Check actual z15 tile containing downtown Hyannis, including parent tiles.
+            for(int z=9;z<=16;z++){
+                double lat=41.6525,lon=-70.2881;int n=1<<z;
+                int x=(int)Math.floor((lon+180)/360*n);
+                int y=(int)Math.floor((1-Math.log(Math.tan(Math.toRadians(lat))+1/Math.cos(Math.toRadians(lat)))/Math.PI)/2*n);
+                dbQuery(db,b,"SELECT url_template,z,x,y,length(data) FROM tiles WHERE z="+z+" AND x="+x+" AND y="+y);
+            }
+        }catch(Exception e){b.append("DATABASE OPEN ERROR ").append(e).append("\n");}
+        try{
+            Process p=new ProcessBuilder("logcat","-d","-t","1500","--pid="+android.os.Process.myPid()).redirectErrorStream(true).start();
+            try(java.io.BufferedReader reader=new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))){
+                String line;int count=0;
+                while((line=reader.readLine())!=null && count<300){
+                    String lower=line.toLowerCase(Locale.US);
+                    if(lower.contains("maplibre")||lower.contains("mbgl")||lower.contains("tile")||lower.contains("offline")){b.append(line).append("\n");count++;}
+                }
+            }finally{p.destroy();}
+        }catch(Exception e){b.append("Native log unavailable ").append(e).append("\n");}
+        logDebug(b.toString());
     }
 
     private String readAsset(String filename) throws Exception {

@@ -80,6 +80,9 @@ public class MainActivity extends Activity {
     private MapLibreMap readyMap;
     private Style readyStyle;
     private boolean demoRouteShown;
+    private static final int IMPORT_ROUTE = 1401;
+    private String pendingSlot;
+    private final String[] routeSlots = {"AM","PM","EX"};
 
     private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
     private static final String[] REGION_NAMES = {
@@ -120,7 +123,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/1.3 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/1.4 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -130,7 +133,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.3 • house-number diagnostics");
+        status.setText("MapLibre Route Viewer v1.4 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -148,6 +151,23 @@ public class MainActivity extends Activity {
         showRouteButton.setText("Show demo route (use AFTER disconnecting)");
         showRouteButton.setEnabled(false);
         controls.addView(showRouteButton);
+        LinearLayout slots = new LinearLayout(this);
+        for (String slot : routeSlots) {
+            Button b = new Button(this);
+            b.setText(slot);
+            slots.addView(b, new LinearLayout.LayoutParams(0,-2,1));
+            b.setOnClickListener(v -> showSavedRoute(slot));
+        }
+        Button importButton = new Button(this);
+        importButton.setText("Import");
+        slots.addView(importButton, new LinearLayout.LayoutParams(0,-2,1));
+        importButton.setOnClickListener(v -> {
+            android.content.Intent pick = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+            pick.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+            pick.setType("*/*");
+            startActivityForResult(pick, IMPORT_ROUTE);
+        });
+        controls.addView(slots);
         showRegionButton = new Button(this);
         showRegionButton.setText("Show selected region (AFTER disconnecting)");
         showRegionButton.setEnabled(false);
@@ -166,11 +186,11 @@ public class MainActivity extends Activity {
                 .newLatLngZoom(new LatLng((a[0]+a[1])/2, (a[2]+a[3])/2), 15.0));
         });
         showRouteButton.setOnClickListener(v -> {
-            if (readyMap == null || readyStyle == null || demoRouteShown) return;
+            if (readyMap == null || readyStyle == null) return;
             try {
                 loadRoute(readyStyle, readyMap);
                 demoRouteShown = true;
-                showRouteButton.setEnabled(false);
+                showRouteButton.setEnabled(true);
             } catch (Exception e) {
                 status.setText("Route load error: " + e.getMessage());
             }
@@ -270,7 +290,8 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("Map ready away from test area • download first, then go offline");
+                status.setText("v1.4 • Import route JSON or select AM / PM / EX");
+                if (pendingSlot != null) showSavedRoute(pendingSlot);
             });
         });
         checkOfflineRegions();
@@ -614,6 +635,7 @@ public class MainActivity extends Activity {
     // Proven Build #10 route rendering retained without behavior changes.
     private void loadRoute(Style style, MapLibreMap map) throws Exception {
         JSONObject route = new JSONObject(readAsset("route_demo.json"));
+        clearRouteLayers(style);
         JSONArray stops = route.getJSONArray("stops");
         JSONArray geometry = route.getJSONArray("geometry");
         List<Feature> pointFeatures = new ArrayList<>();
@@ -654,6 +676,134 @@ public class MainActivity extends Activity {
         map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
             .newLatLngBounds(bounds.build(), 90));
         status.setText(stops.length() + " numbered stops • overlap enabled • demo route");
+    }
+
+
+    private void clearRouteLayers(Style style) {
+        for (String id : new String[]{"numbered-stops","here-route-line","tomtom-route-line"}) {
+            if (style.getLayer(id) != null) style.removeLayer(id);
+        }
+        for (String id : new String[]{"stops-source","route-source"}) {
+            if (style.getSource(id) != null) style.removeSource(id);
+        }
+    }
+
+    private Point checkedPoint(double lat, double lon) throws Exception {
+        if (!Double.isFinite(lat) || !Double.isFinite(lon) || Math.abs(lat)>90 || Math.abs(lon)>180)
+            throw new Exception("Invalid coordinate");
+        return Point.fromLngLat(lon,lat);
+    }
+
+    private JSONObject validateRoute(String raw) throws Exception {
+        JSONObject route = new JSONObject(raw);
+        String slot = route.getString("route");
+        if (!java.util.Arrays.asList(routeSlots).contains(slot)) throw new Exception("Expected AM, PM or EX");
+        if (!"tomtom".equals(route.getString("provider"))) throw new Exception("Expected TomTom provider");
+        JSONArray stops = route.getJSONArray("stops"), legs = route.getJSONArray("legs");
+        if (stops.length()<1 || stops.length()>150 || legs.length()!=stops.length()-1)
+            throw new Exception("Invalid stop or leg count");
+        for(int i=0;i<stops.length();i++){
+            JSONObject s=stops.getJSONObject(i);
+            checkedPoint(s.getDouble("lat"),s.getDouble("lon"));
+            s.getString("address");
+        }
+        for(int i=0;i<legs.length();i++){
+            JSONObject leg=legs.getJSONObject(i);
+            JSONArray pts=leg.getJSONArray("points");
+            if(pts.length()==0 && leg.getJSONObject("summary").getLong("lengthInMeters")!=0)
+                throw new Exception("Missing geometry for leg "+(i+1));
+            for(int j=0;j<pts.length();j++){
+                JSONObject p=pts.getJSONObject(j);
+                checkedPoint(p.getDouble("latitude"),p.getDouble("longitude"));
+            }
+        }
+        return route;
+    }
+
+    private void installRoute(String raw) throws Exception {
+        JSONObject route=validateRoute(raw);
+        String slot=route.getString("route");
+        android.util.AtomicFile file=new android.util.AtomicFile(new java.io.File(getFilesDir(),"route_"+slot+".json"));
+        java.io.FileOutputStream out=file.startWrite();
+        try {
+            out.write(raw.getBytes(StandardCharsets.UTF_8));
+            file.finishWrite(out);
+        } catch(Exception e) { file.failWrite(out); throw e; }
+        pendingSlot=slot;
+        if(readyStyle!=null) showSavedRoute(slot);
+        else status.setText(slot+" saved; waiting for map");
+    }
+
+    private void showSavedRoute(String slot) {
+        try {
+            android.util.AtomicFile file=new android.util.AtomicFile(new java.io.File(getFilesDir(),"route_"+slot+".json"));
+            JSONObject route=validateRoute(new String(file.readFully(),StandardCharsets.UTF_8));
+            pendingSlot=slot;
+            if(readyStyle==null || readyMap==null) return;
+            JSONArray stops=route.getJSONArray("stops"), legs=route.getJSONArray("legs");
+            List<Feature> markers=new ArrayList<>(), lines=new ArrayList<>();
+            LatLngBounds.Builder bounds=new LatLngBounds.Builder();
+            clearRouteLayers(readyStyle);
+            for(int i=0;i<stops.length();i++){
+                JSONObject s=stops.getJSONObject(i);
+                double lat=s.getDouble("lat"),lon=s.getDouble("lon");
+                String icon="installed_stop_"+(i+1);
+                readyStyle.addImage(icon,numberIcon(i+1));
+                Feature f=Feature.fromGeometry(checkedPoint(lat,lon));
+                f.addStringProperty("icon",icon);
+                f.addStringProperty("address",s.getString("address"));
+                f.addNumberProperty("number",i+1);
+                markers.add(f);
+                bounds.include(new LatLng(lat,lon));
+            }
+            int points=0;
+            for(int i=0;i<legs.length();i++){
+                JSONArray pts=legs.getJSONObject(i).getJSONArray("points");
+                List<Point> coords=new ArrayList<>();
+                for(int j=0;j<pts.length();j++){
+                    JSONObject p=pts.getJSONObject(j);
+                    double lat=p.getDouble("latitude"),lon=p.getDouble("longitude");
+                    coords.add(checkedPoint(lat,lon));
+                    bounds.include(new LatLng(lat,lon));
+                    points++;
+                }
+                if(coords.size()>=2){
+                    Feature f=Feature.fromGeometry(LineString.fromLngLats(coords));
+                    f.addNumberProperty("leg",i+1);
+                    lines.add(f);
+                }
+            }
+            readyStyle.addSource(new GeoJsonSource("route-source",FeatureCollection.fromFeatures(lines)));
+            LineLayer line=new LineLayer("tomtom-route-line","route-source");
+            line.withProperties(PropertyFactory.lineColor("#1769AA"),PropertyFactory.lineWidth(4f));
+            readyStyle.addLayer(line);
+            readyStyle.addSource(new GeoJsonSource("stops-source",FeatureCollection.fromFeatures(markers)));
+            SymbolLayer layer=new SymbolLayer("numbered-stops","stops-source");
+            layer.withProperties(PropertyFactory.iconImage(Expression.get("icon")),PropertyFactory.iconAllowOverlap(true),PropertyFactory.iconIgnorePlacement(true),PropertyFactory.iconSize(1f));
+            readyStyle.addLayer(layer);
+            try {
+                readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(bounds.build(),90));
+            } catch(Exception e) {
+                JSONObject s=stops.getJSONObject(0);
+                readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(new LatLng(s.getDouble("lat"),s.getDouble("lon")),16));
+            }
+            status.setText(slot+" • "+stops.length()+" stops • "+legs.length()+" legs • "+points+" points");
+        } catch(Exception e) { status.setText(slot+" route unavailable: "+e.getMessage()); }
+    }
+
+    @Override protected void onActivityResult(int request,int result,android.content.Intent data){
+        super.onActivityResult(request,result,data);
+        if(request!=IMPORT_ROUTE || result!=RESULT_OK || data==null || data.getData()==null) return;
+        try(InputStream in=getContentResolver().openInputStream(data.getData());
+            ByteArrayOutputStream out=new ByteArrayOutputStream()){
+            if(in==null) throw new Exception("Cannot open route");
+            byte[] buffer=new byte[8192]; int n;
+            while((n=in.read(buffer))!=-1){
+                if(out.size()+n>8*1024*1024) throw new Exception("Route file too large");
+                out.write(buffer,0,n);
+            }
+            installRoute(out.toString("UTF-8"));
+        } catch(Exception e){status.setText("Import failed: "+e.getMessage());}
     }
 
     private Bitmap numberIcon(int n) {

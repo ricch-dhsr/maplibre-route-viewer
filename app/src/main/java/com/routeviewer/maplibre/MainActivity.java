@@ -44,30 +44,33 @@ import org.maplibre.geojson.FeatureCollection;
 import org.maplibre.geojson.LineString;
 import org.maplibre.geojson.Point;
 
-/** Offline test v0.3: preserves the proven v0.2 demo route and download region. */
+/** Offline test v0.5: high-detail Athol pilot, no automatic route camera movement. */
 public class MainActivity extends Activity {
     private MapView mapView;
     private TextView status, offlineStatus;
-    private Button downloadButton;
+    private Button downloadButton, showRouteButton;
     private Spinner regionPicker;
     private final java.util.HashMap<String, OfflineRegion> savedRegions = new java.util.HashMap<>();
     private int activeRegionIndex = -1;
     private OfflineRegion offlineRegion;
     private boolean downloading;
+    private MapLibreMap readyMap;
+    private Style readyStyle;
+    private boolean demoRouteShown;
 
     private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
     private static final String[] REGION_NAMES = {
-        "Orange/Athol (existing test)", "Western MA pilot", "Central MA pilot",
+        "Athol high-detail test (z9-16)", "Western MA pilot", "Central MA pilot",
         "Eastern MA pilot", "Cape & Islands pilot"
     };
     private static final String[] REGION_IDS = {
-        "orange-athol-test-v02", "western-ma-pilot-v04", "central-ma-pilot-v04",
+        "athol-detail-test-v05", "western-ma-pilot-v04", "central-ma-pilot-v04",
         "eastern-ma-pilot-v04", "cape-islands-pilot-v04"
     };
     // Pilot rectangles, NOT verified complete Massachusetts coverage.
     // Coordinates: south, north, west, east.
     private static final double[][] AREAS = {
-        {42.53, 42.66, -72.40, -72.15},
+        {42.58, 42.62, -72.30, -72.25},
         {42.00, 42.80, -73.50, -72.45},
         {42.00, 42.80, -72.45, -71.55},
         {42.00, 42.80, -71.55, -70.55},
@@ -85,7 +88,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/0.4 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/0.5 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -95,7 +98,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v0.4 • regional pilot");
+        status.setText("MapLibre Route Viewer v0.5 • clean offline test");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -109,6 +112,20 @@ public class MainActivity extends Activity {
             this, android.R.layout.simple_spinner_dropdown_item, REGION_NAMES);
         regionPicker.setAdapter(regionAdapter);
         controls.addView(regionPicker);
+        showRouteButton = new Button(this);
+        showRouteButton.setText("Show demo route (use AFTER disconnecting)");
+        showRouteButton.setEnabled(false);
+        controls.addView(showRouteButton);
+        showRouteButton.setOnClickListener(v -> {
+            if (readyMap == null || readyStyle == null || demoRouteShown) return;
+            try {
+                loadRoute(readyStyle, readyMap);
+                demoRouteShown = true;
+                showRouteButton.setEnabled(false);
+            } catch (Exception e) {
+                status.setText("Route load error: " + e.getMessage());
+            }
+        });
         downloadButton = new Button(this);
         downloadButton.setText("Download selected region");
         offlineStatus = new TextView(this);
@@ -129,10 +146,18 @@ public class MainActivity extends Activity {
         downloadButton.setOnClickListener(v -> startOfflineDownload());
 
         mapView.onCreate(saved);
-        mapView.getMapAsync(map -> map.setStyle(new Style.Builder().fromUri(STYLE_URL), style -> {
-            try { loadRoute(style, map); }
-            catch (Exception e) { status.setText("Route load error: " + e.getMessage()); }
-        }));
+        mapView.getMapAsync(map -> {
+            // Keep the camera well away from Massachusetts until the user
+            // explicitly chooses to view the route AFTER disabling internet.
+            map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
+                .newLatLngZoom(new LatLng(40.6, -67.5), 7.0));
+            map.setStyle(new Style.Builder().fromUri(STYLE_URL), style -> {
+                readyMap = map;
+                readyStyle = style;
+                showRouteButton.setEnabled(true);
+                status.setText("Map ready away from test area • download first, then go offline");
+            });
+        });
         checkOfflineRegions();
     }
 
@@ -164,7 +189,7 @@ public class MainActivity extends Activity {
         downloadButton.setEnabled(true);
         downloadButton.setText(region == null ? "Download selected region" : "Check / resume region");
         if (region == null) {
-            offlineStatus.setText(REGION_NAMES[index] + ": not downloaded (zoom 9–12 pilot)");
+            offlineStatus.setText(REGION_NAMES[index] + ": not downloaded (zoom " + (index == 0 ? "9–16" : "9–12") + ")");
             return;
         }
         region.getStatus(new OfflineRegion.OfflineRegionStatusCallback() {
@@ -217,7 +242,8 @@ public class MainActivity extends Activity {
             .include(new LatLng(a[0], a[2]))
             .include(new LatLng(a[1], a[3])).build();
         OfflineTilePyramidRegionDefinition definition =
-            new OfflineTilePyramidRegionDefinition(STYLE_URL, bounds, 9.0, 12.0, 1.0f, false);
+            new OfflineTilePyramidRegionDefinition(STYLE_URL, bounds,
+                9.0, index == 0 ? 16.0 : 12.0, 1.0f, false);
         OfflineManager.getInstance(this).createOfflineRegion(definition,
             REGION_IDS[index].getBytes(StandardCharsets.UTF_8),
             new OfflineManager.CreateOfflineRegionCallback() {

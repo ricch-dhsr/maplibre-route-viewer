@@ -37,6 +37,7 @@ import org.maplibre.android.offline.OfflineRegionStatus;
 import org.maplibre.android.offline.OfflineTilePyramidRegionDefinition;
 import org.maplibre.android.style.layers.Layer;
 import org.maplibre.android.style.layers.FillExtrusionLayer;
+import org.maplibre.android.style.layers.FillLayer;
 import org.maplibre.android.style.layers.LineLayer;
 import org.maplibre.android.style.layers.SymbolLayer;
 import org.maplibre.android.style.layers.PropertyFactory;
@@ -91,7 +92,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/0.7 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/0.8 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -101,7 +102,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v0.7 • offline diagnostics");
+        status.setText("MapLibre Route Viewer v0.8 • 2D footprints + diagnostics");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -170,10 +171,26 @@ public class MainActivity extends Activity {
             map.getUiSettings().setTiltGesturesEnabled(false);
             map.setMaxPitchPreference(0.0);
             map.setStyle(new Style.Builder().fromUri(STYLE_URL), style -> {
-                // Hide every 3D building extrusion; leave ordinary 2D footprints intact.
+                // Replace extrusion rendering with a flat footprint layer using
+                // the same source, source-layer, and feature filter.
+                // Hiding extrusions alone removed buildings in Greenfield.
                 for (Layer layer : style.getLayers()) {
                     if (layer instanceof FillExtrusionLayer) {
-                        layer.setProperties(PropertyFactory.visibility("none"));
+                        FillExtrusionLayer extrusion = (FillExtrusionLayer) layer;
+                        FillLayer flat = new FillLayer(
+                            "flat-" + extrusion.getId(), extrusion.getSourceId());
+                        if (extrusion.getSourceLayer() != null) {
+                            flat.setSourceLayer(extrusion.getSourceLayer());
+                        }
+                        if (extrusion.getFilter() != null) {
+                            flat.setFilter(extrusion.getFilter());
+                        }
+                        flat.setProperties(
+                            PropertyFactory.fillColor("#D6D5D2"),
+                            PropertyFactory.fillOpacity(0.9f)
+                        );
+                        style.addLayerBelow(flat, extrusion.getId());
+                        extrusion.setProperties(PropertyFactory.visibility("none"));
                     }
                 }
                 readyMap = map;

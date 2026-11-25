@@ -47,7 +47,7 @@ import org.maplibre.geojson.FeatureCollection;
 import org.maplibre.geojson.LineString;
 import org.maplibre.geojson.Point;
 
-/** v0.7: Athol + Greenfield high-detail downloads and explicit offline diagnostics. */
+/** v0.9: adds optional house-number labels to existing offline vector tiles. */
 public class MainActivity extends Activity {
     private MapView mapView;
     private TextView status, offlineStatus;
@@ -92,7 +92,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/0.8 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/0.9 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v0.8 • 2D footprints + diagnostics");
+        status.setText("MapLibre Route Viewer v0.9 • house number test");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -192,6 +192,32 @@ public class MainActivity extends Activity {
                         style.addLayerBelow(flat, extrusion.getId());
                         extrusion.setProperties(PropertyFactory.visibility("none"));
                     }
+                }
+                // OpenMapTiles address labels share the vector source used by
+                // Liberty's building layer. Reuse that source; no new tiles,
+                // offline regions, or network requests are needed.
+                String addressSource = null;
+                for (Layer layer : style.getLayers()) {
+                    if (layer instanceof FillExtrusionLayer) {
+                        addressSource = ((FillExtrusionLayer) layer).getSourceId();
+                        break;
+                    }
+                }
+                if (addressSource != null) {
+                    SymbolLayer houseNumbers = new SymbolLayer(
+                        "delivery-house-numbers", addressSource);
+                    houseNumbers.setSourceLayer("housenumber");
+                    houseNumbers.setMinZoom(15.0f);
+                    houseNumbers.withProperties(
+                        PropertyFactory.textField("{housenumber}"),
+                        PropertyFactory.textSize(13f),
+                        PropertyFactory.textColor("#333333"),
+                        PropertyFactory.textHaloColor("#FFFFFF"),
+                        PropertyFactory.textHaloWidth(1.2f),
+                        PropertyFactory.textAllowOverlap(false),
+                        PropertyFactory.textIgnorePlacement(false)
+                    );
+                    style.addLayer(houseNumbers);
                 }
                 readyMap = map;
                 readyStyle = style;

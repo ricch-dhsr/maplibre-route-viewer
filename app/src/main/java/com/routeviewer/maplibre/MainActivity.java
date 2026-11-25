@@ -103,7 +103,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/1.0 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/1.1 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -113,7 +113,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.0 • house-number diagnostics");
+        status.setText("MapLibre Route Viewer v1.1 • house-number diagnostics");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -225,13 +225,14 @@ public class MainActivity extends Activity {
                     houseNumbers.setSourceLayer("housenumber");
                     houseNumbers.setMinZoom(15.0f);
                     houseNumbers.withProperties(
-                        PropertyFactory.textField("{housenumber}"),
+                        PropertyFactory.textField(Expression.get("housenumber")),
+                        PropertyFactory.textFont(new String[]{"Noto Sans Regular"}),
                         PropertyFactory.textSize(13f),
                         PropertyFactory.textColor("#333333"),
                         PropertyFactory.textHaloColor("#FFFFFF"),
                         PropertyFactory.textHaloWidth(1.2f),
-                        PropertyFactory.textAllowOverlap(false),
-                        PropertyFactory.textIgnorePlacement(false)
+                        PropertyFactory.textAllowOverlap(true),
+                        PropertyFactory.textIgnorePlacement(true)
                     );
                     style.addLayer(houseNumbers);
                 }
@@ -256,7 +257,7 @@ public class MainActivity extends Activity {
         int addressProperties = 0;
         try {
             LatLng center = readyMap.getCameraPosition().target;
-            report.append("MAPLIBRE HOUSE NUMBER DIAGNOSTICS v1.0\\n");
+            report.append("MAPLIBRE HOUSE NUMBER DIAGNOSTICS v1.1\\n");
             report.append("Center: ").append(center.getLatitude()).append(", ")
                 .append(center.getLongitude()).append("\\n");
             report.append("Zoom: ").append(readyMap.getCameraPosition().zoom).append("\\n");
@@ -270,6 +271,15 @@ public class MainActivity extends Activity {
                 report.append("House label source layer: ")
                     .append(houseLayer.getSourceLayer()).append("\\n");
                 report.append("House label minimum zoom: ").append(houseLayer.getMinZoom()).append("\\n");
+            }
+
+            try {
+                List<Feature> rendered = readyMap.queryRenderedFeatures(
+                    new android.graphics.RectF(0, 0, mapView.getWidth(), mapView.getHeight()),
+                    "delivery-house-numbers");
+                report.append("Rendered house-number features: ").append(rendered.size()).append("\n");
+            } catch (Exception e) {
+                report.append("Rendered query ERROR: ").append(e.toString()).append("\n");
             }
 
             for (org.maplibre.android.style.sources.Source source : readyStyle.getSources()) {

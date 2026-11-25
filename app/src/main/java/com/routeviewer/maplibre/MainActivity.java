@@ -263,7 +263,7 @@ public class MainActivity extends Activity {
             report.append("Region selection: ").append(regionPicker.getSelectedItem()).append("\\n");
             report.append("Network: run once offline and once online for comparison\\n\\n");
 
-            Layer houseLayer = readyStyle.getLayer("delivery-house-numbers");
+            SymbolLayer houseLayer = (SymbolLayer) readyStyle.getLayer("delivery-house-numbers");
             report.append("House label layer present: ").append(houseLayer != null).append("\\n");
             if (houseLayer != null) {
                 report.append("House label source: ").append(houseLayer.getSourceId()).append("\\n");

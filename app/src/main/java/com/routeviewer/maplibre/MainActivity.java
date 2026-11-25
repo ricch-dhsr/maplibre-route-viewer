@@ -82,6 +82,12 @@ public class MainActivity extends Activity {
     private boolean demoRouteShown;
     private static final int IMPORT_ROUTE = 1401;
     private String pendingSlot;
+    private LinearLayout controls;
+    private Button menuButton;
+    private final StringBuilder debugLog = new StringBuilder();
+    private boolean reloading;
+    private org.maplibre.android.camera.CameraPosition reloadCamera;
+    private LatLngBounds routeBounds;
     private final String[] routeSlots = {"AM","PM","EX"};
 
     private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
@@ -115,6 +121,7 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         MapLibre.getInstance(this);
+        logDebug("START v1.4.1 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -122,9 +129,15 @@ public class MainActivity extends Activity {
         dispatcher.setMaxRequestsPerHost(4);
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
-            .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/1.4 (Android)")
-                .build()))
+            .addInterceptor(chain -> {
+                String url=chain.request().url().toString();
+                try {
+                    okhttp3.Response response=chain.proceed(chain.request().newBuilder()
+                        .header("User-Agent","RichMapLibreRouteViewer/1.3 (Android)").build());
+                    logDebug("HTTP "+response.code()+" "+url);
+                    return response;
+                } catch(java.io.IOException e){logDebug("HTTP failure "+url+" "+e); throw e;}
+            })
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
         OfflineManager.getInstance(this).setOfflineMapboxTileCountLimit(100000L);
@@ -133,13 +146,13 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.1 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
         frame.addView(status, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
 
-        LinearLayout controls = new LinearLayout(this);
+        controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setBackgroundColor(0xDD182A36);
         regionPicker = new Spinner(this);
@@ -190,6 +203,8 @@ public class MainActivity extends Activity {
             try {
                 loadRoute(readyStyle, readyMap);
                 demoRouteShown = true;
+                pendingSlot=null;
+                hideControls();
                 showRouteButton.setEnabled(true);
             } catch (Exception e) {
                 status.setText("Route load error: " + e.getMessage());
@@ -214,6 +229,17 @@ public class MainActivity extends Activity {
             regionPicker.setSelection(FIRST_STATE_REGION);
             startOfflineDownload();
         });
+        LinearLayout tools = new LinearLayout(this);
+        for(String name:new String[]{"Reload Map","Export Debug Log","Hide"}) {
+            Button b=new Button(this); b.setText(name);
+            tools.addView(b,new LinearLayout.LayoutParams(0,-2,1));
+            b.setOnClickListener(v -> {
+                if(name.equals("Reload Map")) reloadMap();
+                else if(name.equals("Export Debug Log")) exportDebug();
+                else hideControls();
+            });
+        }
+        controls.addView(tools);
         controls.addView(offlineStatus);
         regionPicker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent,
@@ -223,6 +249,16 @@ public class MainActivity extends Activity {
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
         frame.addView(controls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        LinearLayout floating=new LinearLayout(this);
+        menuButton=new Button(this); menuButton.setText("Menu");
+        menuButton.setOnClickListener(v -> {controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
+        floating.addView(menuButton);
+        Button fit=new Button(this); fit.setText("Fit Route");
+        fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
+        floating.addView(fit);
+        frame.addView(floating,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.RIGHT));
+        floating.setVisibility(android.view.View.GONE);
+        menuButton.setTag(floating);
         setContentView(frame);
         downloadButton.setOnClickListener(v -> startOfflineDownload());
 
@@ -235,7 +271,18 @@ public class MainActivity extends Activity {
             // Keep the map flat even if the user accidentally performs a tilt gesture.
             map.getUiSettings().setTiltGesturesEnabled(false);
             map.setMaxPitchPreference(0.0);
-            map.setStyle(new Style.Builder().fromUri(STYLE_URL), style -> {
+            readyMap=map;
+            mapView.addOnDidFailLoadingMapListener(error -> logDebug("MAP LOAD FAILURE "+error));
+            mapView.addOnDidFinishLoadingMapListener(() -> logDebug("MAP LOAD FINISHED"));
+            mapView.addOnDidFinishRenderingMapListener(full -> logDebug("MAP RENDER full="+full));
+            loadMapStyle(map);
+        });
+        checkOfflineRegions();
+    }
+
+    private void loadMapStyle(MapLibreMap map) {
+        logDebug("STYLE requested "+networkState());
+        map.setStyle(new Style.Builder().fromUri(STYLE_URL), style -> {
                 // Replace extrusion rendering with a flat footprint layer using
                 // the same source, source-layer, and feature filter.
                 // Hiding extrusions alone removed buildings in Greenfield.
@@ -290,11 +337,14 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.1 • Import route JSON or select AM / PM / EX");
+                logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
+                else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
+                if(reloadCamera!=null) map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(reloadCamera));
+                reloadCamera=null; reloading=false;
+                mapView.postDelayed(() -> snapshotDebug("style + 5 seconds"),5000);
             });
-        });
-        checkOfflineRegions();
     }
 
     // Source queries inspect loaded vector tiles, including features that are
@@ -673,8 +723,9 @@ public class MainActivity extends Activity {
             line.withProperties(PropertyFactory.lineColor("#1769AA"), PropertyFactory.lineWidth(4f));
             style.addLayerBelow(line, "numbered-stops");
         }
+        routeBounds=bounds.build();
         map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
-            .newLatLngBounds(bounds.build(), 90));
+            .newLatLngBounds(routeBounds, 90));
         status.setText(stops.length() + " numbered stops • overlap enabled • demo route");
     }
 
@@ -739,6 +790,7 @@ public class MainActivity extends Activity {
             android.util.AtomicFile file=new android.util.AtomicFile(new java.io.File(getFilesDir(),"route_"+slot+".json"));
             JSONObject route=validateRoute(new String(file.readFully(),StandardCharsets.UTF_8));
             pendingSlot=slot;
+            demoRouteShown=false;
             if(readyStyle==null || readyMap==null) return;
             JSONArray stops=route.getJSONArray("stops"), legs=route.getJSONArray("legs");
             List<Feature> markers=new ArrayList<>(), lines=new ArrayList<>();
@@ -747,8 +799,19 @@ public class MainActivity extends Activity {
             for(int i=0;i<stops.length();i++){
                 JSONObject s=stops.getJSONObject(i);
                 double lat=s.getDouble("lat"),lon=s.getDouble("lon");
-                String icon="installed_stop_"+(i+1);
-                readyStyle.addImage(icon,numberIcon(i+1));
+                int count=1;
+                boolean later=false;
+                for(int j=0;j<stops.length();j++){
+                    if(j==i) continue;
+                    JSONObject other=stops.getJSONObject(j);
+                    if(lat==other.getDouble("lat") && lon==other.getDouble("lon")){
+                        if(j>i) later=true;
+                        else count++;
+                    }
+                }
+                if(later) continue;
+                String icon="installed_stop_"+(i+1)+"_"+count;
+                readyStyle.addImage(icon,numberIcon(i+1,count));
                 Feature f=Feature.fromGeometry(checkedPoint(lat,lon));
                 f.addStringProperty("icon",icon);
                 f.addStringProperty("address",s.getString("address"));
@@ -782,12 +845,16 @@ public class MainActivity extends Activity {
             layer.withProperties(PropertyFactory.iconImage(Expression.get("icon")),PropertyFactory.iconAllowOverlap(true),PropertyFactory.iconIgnorePlacement(true),PropertyFactory.iconSize(1f));
             readyStyle.addLayer(layer);
             try {
-                readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(bounds.build(),90));
+                routeBounds=bounds.build();
+                readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));
             } catch(Exception e) {
                 JSONObject s=stops.getJSONObject(0);
                 readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(new LatLng(s.getDouble("lat"),s.getDouble("lon")),16));
             }
             status.setText(slot+" • "+stops.length()+" stops • "+legs.length()+" legs • "+points+" points");
+            logDebug("ROUTE "+slot+" stops="+stops.length()+" markers="+markers.size()+" points="+points);
+            hideControls();
+            mapView.postDelayed(() -> snapshotDebug("route + 5 seconds"),5000);
         } catch(Exception e) { status.setText(slot+" route unavailable: "+e.getMessage()); }
     }
 
@@ -806,7 +873,8 @@ public class MainActivity extends Activity {
         } catch(Exception e){status.setText("Import failed: "+e.getMessage());}
     }
 
-    private Bitmap numberIcon(int n) {
+    private Bitmap numberIcon(int n) { return numberIcon(n,1); }
+    private Bitmap numberIcon(int n,int count) {
         Bitmap b = Bitmap.createBitmap(88, 88, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -818,7 +886,74 @@ public class MainActivity extends Activity {
         p.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD));
         p.setTextSize(n >= 100 ? 31 : 39);
         c.drawText(String.valueOf(n), 44, 57, p);
+        if(count>1){
+            p.setColor(Color.WHITE); c.drawCircle(72,16,16,p);
+            p.setColor(0xFFF5B82E); c.drawCircle(72,16,14,p);
+            p.setColor(0xFF222222); p.setTextSize(count>=10?15:21);
+            c.drawText(String.valueOf(count),72,23,p);
+        }
         return b;
+    }
+
+
+    private void hideControls(){
+        controls.setVisibility(android.view.View.GONE);
+        ((android.view.View)menuButton.getTag()).setVisibility(android.view.View.VISIBLE);
+    }
+    private synchronized void logDebug(String s){
+        if(debugLog.length()>250000) debugLog.delete(0,50000);
+        debugLog.append(new java.text.SimpleDateFormat("HH:mm:ss.SSS",Locale.US).format(new java.util.Date())).append(" ").append(s).append("\n");
+    }
+    private String networkState(){
+        try {
+            android.net.ConnectivityManager cm=(android.net.ConnectivityManager)getSystemService(Context.CONNECTIVITY_SERVICE);
+            android.net.NetworkInfo ni=cm.getActiveNetworkInfo();
+            return ni==null?"network=none":"network="+ni.getTypeName()+" connected="+ni.isConnected();
+        } catch(Exception e){return "network unknown "+e;}
+    }
+    private void snapshotDebug(String reason){
+        logDebug("SNAPSHOT "+reason+" "+networkState());
+        if(readyMap!=null) logDebug("CAMERA "+readyMap.getCameraPosition());
+        if(readyStyle!=null) for(org.maplibre.android.style.sources.Source source:readyStyle.getSources()){
+            logDebug("SOURCE "+source.getId());
+            if(source instanceof VectorSource) for(String layer:new String[]{"transportation","water","building","housenumber","poi"}) try{
+                logDebug("  "+layer+"="+((VectorSource)source).querySourceFeatures(new String[]{layer},null).size());
+            }catch(Exception e){logDebug("query "+e);}
+        }
+        StringBuilder db=new StringBuilder(); appendDatabaseFiles(getFilesDir(),db,3); logDebug(db.toString());
+        for(String id:new ArrayList<>(savedRegions.keySet())){
+            OfflineRegion region=savedRegions.get(id);
+            region.getStatus(new OfflineRegion.OfflineRegionStatusCallback(){
+                @Override public void onStatus(OfflineRegionStatus s){logDebug("REGION "+id+" complete="+s.isComplete()+" tiles="+s.getCompletedTileCount()+" bytes="+s.getCompletedResourceSize()+" resources="+s.getCompletedResourceCount()+"/"+s.getRequiredResourceCount());}
+                @Override public void onError(String e){logDebug("REGION "+id+" "+e);}
+            });
+        }
+    }
+    private void reloadMap(){
+        if(readyMap==null || downloading || reloading) return;
+        snapshotDebug("before reload");
+        reloadCamera=readyMap.getCameraPosition();
+        reloading=true; readyStyle=null;
+        status.setText("Reloading map...");
+        loadMapStyle(readyMap);
+        mapView.postDelayed(() -> {if(reloading){reloading=false;logDebug("RELOAD timeout");status.setText("Reload timed out; export debug log");}},15000);
+    }
+    private void exportDebug(){
+        snapshotDebug("export");
+        mapView.postDelayed(() -> {
+            String result;
+            synchronized(this){result=debugLog.toString();}
+            try{
+                ContentValues values=new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME,"maplibre_debug_"+System.currentTimeMillis()+".txt");
+                values.put(MediaStore.Downloads.MIME_TYPE,"text/plain");
+                values.put(MediaStore.Downloads.RELATIVE_PATH,Environment.DIRECTORY_DOWNLOADS);
+                android.net.Uri uri=getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,values);
+                if(uri==null) throw new Exception("Cannot create log");
+                try(java.io.OutputStream out=getContentResolver().openOutputStream(uri)){out.write(result.getBytes(StandardCharsets.UTF_8));}
+                Toast.makeText(this,"Debug log saved to Downloads",Toast.LENGTH_LONG).show();
+            }catch(Exception e){status.setText("Export error "+e);}
+        },1200);
     }
 
     private String readAsset(String filename) throws Exception {

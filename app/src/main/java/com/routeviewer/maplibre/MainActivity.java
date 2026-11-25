@@ -1,6 +1,17 @@
 package com.routeviewer.maplibre;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.ContentValues;
+import android.content.Context;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.widget.Toast;
+import org.maplibre.android.style.sources.VectorSource;
+import org.maplibre.android.style.expressions.Expression;
+import org.maplibre.android.geometry.LatLng;
+
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -51,7 +62,7 @@ import org.maplibre.geojson.Point;
 public class MainActivity extends Activity {
     private MapView mapView;
     private TextView status, offlineStatus;
-    private Button downloadButton, showRouteButton, showRegionButton;
+    private Button downloadButton, showRouteButton, showRegionButton, diagnosticButton;
     private Spinner regionPicker;
     private final java.util.HashMap<String, OfflineRegion> savedRegions = new java.util.HashMap<>();
     private int activeRegionIndex = -1;
@@ -92,7 +103,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/0.9 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/1.0 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -102,7 +113,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v0.9 • house number test");
+        status.setText("MapLibre Route Viewer v1.0 • house-number diagnostics");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -124,6 +135,11 @@ public class MainActivity extends Activity {
         showRegionButton.setText("Show selected region (AFTER disconnecting)");
         showRegionButton.setEnabled(false);
         controls.addView(showRegionButton);
+        diagnosticButton = new Button(this);
+        diagnosticButton.setText("HOUSE NUMBER DIAGNOSTICS (CURRENT VIEW)");
+        diagnosticButton.setEnabled(false);
+        controls.addView(diagnosticButton);
+        diagnosticButton.setOnClickListener(v -> runHouseNumberDiagnostics());
         showRegionButton.setOnClickListener(v -> {
             if (readyMap == null || downloading) return;
             int i = regionPicker.getSelectedItemPosition();
@@ -223,10 +239,107 @@ public class MainActivity extends Activity {
                 readyStyle = style;
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
+                diagnosticButton.setEnabled(true);
                 status.setText("Map ready away from test area • download first, then go offline");
             });
         });
         checkOfflineRegions();
+    }
+
+    // Source queries inspect loaded vector tiles, including features that are
+    // not drawn by a style layer. Pan/zoom and wait for tiles before running.
+    private void runHouseNumberDiagnostics() {
+        if (readyMap == null || readyStyle == null) return;
+        StringBuilder report = new StringBuilder();
+        int houseTotal = 0;
+        int buildingTotal = 0;
+        int addressProperties = 0;
+        try {
+            LatLng center = readyMap.getCameraPosition().target;
+            report.append("MAPLIBRE HOUSE NUMBER DIAGNOSTICS v1.0\\n");
+            report.append("Center: ").append(center.getLatitude()).append(", ")
+                .append(center.getLongitude()).append("\\n");
+            report.append("Zoom: ").append(readyMap.getCameraPosition().zoom).append("\\n");
+            report.append("Region selection: ").append(regionPicker.getSelectedItem()).append("\\n");
+            report.append("Network: run once offline and once online for comparison\\n\\n");
+
+            Layer houseLayer = readyStyle.getLayer("delivery-house-numbers");
+            report.append("House label layer present: ").append(houseLayer != null).append("\\n");
+            if (houseLayer != null) {
+                report.append("House label source: ").append(houseLayer.getSourceId()).append("\\n");
+                report.append("House label source layer: ")
+                    .append(houseLayer.getSourceLayer()).append("\\n");
+                report.append("House label minimum zoom: ").append(houseLayer.getMinZoom()).append("\\n");
+            }
+
+            for (org.maplibre.android.style.sources.Source source : readyStyle.getSources()) {
+                report.append("\\nSOURCE: ").append(source.getId())
+                    .append(" (").append(source.getClass().getSimpleName()).append(")\\n");
+                if (!(source instanceof VectorSource)) continue;
+                VectorSource vector = (VectorSource) source;
+                String[] layers = {"housenumber", "building", "address", "poi"};
+                for (String layerName : layers) {
+                    try {
+                        List<Feature> features = vector.querySourceFeatures(
+                            new String[]{layerName}, null);
+                        int count = features == null ? 0 : features.size();
+                        report.append("  ").append(layerName).append(": ")
+                            .append(count).append(" loaded features\\n");
+                        if ("housenumber".equals(layerName)) houseTotal += count;
+                        if ("building".equals(layerName)) buildingTotal += count;
+                        int sampled = 0;
+                        if (features != null) for (Feature feature : features) {
+                            String props = feature.properties() == null
+                                ? "{}" : feature.properties().toString();
+                            if (props.contains("housenumber") || props.contains("addr:")) {
+                                addressProperties++;
+                                if (sampled < 5) {
+                                    report.append("    ADDRESS SAMPLE: ")
+                                        .append(props).append("\\n");
+                                    sampled++;
+                                }
+                            } else if (sampled < 2 && "housenumber".equals(layerName)) {
+                                report.append("    SAMPLE: ").append(props).append("\\n");
+                                sampled++;
+                            }
+                        }
+                    } catch (Exception e) {
+                        report.append("  ").append(layerName).append(" query ERROR: ")
+                            .append(e.toString()).append("\\n");
+                    }
+                }
+            }
+            report.append("\\nTOTALS across loaded sources (may include tile duplicates)\\n");
+            report.append("housenumber features: ").append(houseTotal).append("\\n");
+            report.append("building features: ").append(buildingTotal).append("\\n");
+            report.append("features with address properties: ")
+                .append(addressProperties).append("\\n");
+            report.append("A zero count only describes currently loaded tiles,")
+                .append(" NOT statewide coverage.\\n");
+        } catch (Exception e) {
+            report.append("\\nDIAGNOSTIC ERROR: ").append(e.toString()).append("\\n");
+        }
+        String result = report.toString();
+        try {
+            ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            cb.setPrimaryClip(ClipData.newPlainText("MapLibre house diagnostics", result));
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME,
+                "maplibre_house_diagnostics_" + System.currentTimeMillis() + ".txt");
+            values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            android.net.Uri uri = getContentResolver().insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) throw new Exception("Downloads insertion returned null");
+            try (java.io.OutputStream stream = getContentResolver().openOutputStream(uri)) {
+                if (stream == null) throw new Exception("Output stream unavailable");
+                stream.write(result.getBytes(StandardCharsets.UTF_8));
+            }
+            status.setText("Diagnostics saved to Downloads and copied to clipboard • "
+                + houseTotal + " house records, " + buildingTotal + " buildings");
+        } catch (Exception e) {
+            status.setText("Diagnostics copied to clipboard; file save failed: " + e.getMessage());
+        }
     }
 
     private String formatSize(long bytes) {

@@ -1,6 +1,9 @@
 plugins { id 'com.android.application' }
 android {
     namespace 'com.routeviewer.maplibre'
+    lint {
+    abortOnError false
+}
     compileSdk 35
     defaultConfig {
         applicationId 'com.routeviewer.maplibre'

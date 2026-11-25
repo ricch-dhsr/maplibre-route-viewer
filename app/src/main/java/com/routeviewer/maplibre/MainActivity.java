@@ -35,6 +35,8 @@ import org.maplibre.android.offline.OfflineRegion;
 import org.maplibre.android.offline.OfflineRegionError;
 import org.maplibre.android.offline.OfflineRegionStatus;
 import org.maplibre.android.offline.OfflineTilePyramidRegionDefinition;
+import org.maplibre.android.style.layers.Layer;
+import org.maplibre.android.style.layers.FillExtrusionLayer;
 import org.maplibre.android.style.layers.LineLayer;
 import org.maplibre.android.style.layers.SymbolLayer;
 import org.maplibre.android.style.layers.PropertyFactory;
@@ -44,11 +46,11 @@ import org.maplibre.geojson.FeatureCollection;
 import org.maplibre.geojson.LineString;
 import org.maplibre.geojson.Point;
 
-/** Offline test v0.5: high-detail Athol pilot, no automatic route camera movement. */
+/** v0.7: Athol + Greenfield high-detail downloads and explicit offline diagnostics. */
 public class MainActivity extends Activity {
     private MapView mapView;
     private TextView status, offlineStatus;
-    private Button downloadButton, showRouteButton;
+    private Button downloadButton, showRouteButton, showRegionButton;
     private Spinner regionPicker;
     private final java.util.HashMap<String, OfflineRegion> savedRegions = new java.util.HashMap<>();
     private int activeRegionIndex = -1;
@@ -60,17 +62,18 @@ public class MainActivity extends Activity {
 
     private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
     private static final String[] REGION_NAMES = {
-        "Athol high-detail test (z9-16)", "Western MA pilot", "Central MA pilot",
+        "Athol high-detail test (z9-16)", "Greenfield detail test (z9-16)", "Western MA pilot", "Central MA pilot",
         "Eastern MA pilot", "Cape & Islands pilot"
     };
     private static final String[] REGION_IDS = {
-        "athol-detail-test-v05", "western-ma-pilot-v04", "central-ma-pilot-v04",
+        "athol-detail-test-v05", "greenfield-detail-test-v07", "western-ma-pilot-v04", "central-ma-pilot-v04",
         "eastern-ma-pilot-v04", "cape-islands-pilot-v04"
     };
     // Pilot rectangles, NOT verified complete Massachusetts coverage.
     // Coordinates: south, north, west, east.
     private static final double[][] AREAS = {
         {42.58, 42.62, -72.30, -72.25},
+        {42.56, 42.60, -72.62, -72.57},
         {42.00, 42.80, -73.50, -72.45},
         {42.00, 42.80, -72.45, -71.55},
         {42.00, 42.80, -71.55, -70.55},
@@ -88,7 +91,7 @@ public class MainActivity extends Activity {
         OkHttpClient mapClient = new OkHttpClient.Builder()
             .dispatcher(dispatcher)
             .addInterceptor(chain -> chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "RichMapLibreRouteViewer/0.5 (Android)")
+                .header("User-Agent", "RichMapLibreRouteViewer/0.7 (Android)")
                 .build()))
             .build();
         HttpRequestUtil.setOkHttpClient(mapClient);
@@ -98,7 +101,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v0.5 • clean offline test");
+        status.setText("MapLibre Route Viewer v0.7 • offline diagnostics");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -116,6 +119,18 @@ public class MainActivity extends Activity {
         showRouteButton.setText("Show demo route (use AFTER disconnecting)");
         showRouteButton.setEnabled(false);
         controls.addView(showRouteButton);
+        showRegionButton = new Button(this);
+        showRegionButton.setText("Show selected region (AFTER disconnecting)");
+        showRegionButton.setEnabled(false);
+        controls.addView(showRegionButton);
+        showRegionButton.setOnClickListener(v -> {
+            if (readyMap == null || downloading) return;
+            int i = regionPicker.getSelectedItemPosition();
+            if (i < 0 || i >= AREAS.length) return;
+            double[] a = AREAS[i];
+            readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
+                .newLatLngZoom(new LatLng((a[0]+a[1])/2, (a[2]+a[3])/2), 15.0));
+        });
         showRouteButton.setOnClickListener(v -> {
             if (readyMap == null || readyStyle == null || demoRouteShown) return;
             try {
@@ -151,10 +166,20 @@ public class MainActivity extends Activity {
             // explicitly chooses to view the route AFTER disabling internet.
             map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
                 .newLatLngZoom(new LatLng(40.6, -67.5), 7.0));
+            // Keep the map flat even if the user accidentally performs a tilt gesture.
+            map.getUiSettings().setTiltGesturesEnabled(false);
+            map.setMaxPitchPreference(0.0);
             map.setStyle(new Style.Builder().fromUri(STYLE_URL), style -> {
+                // Hide every 3D building extrusion; leave ordinary 2D footprints intact.
+                for (Layer layer : style.getLayers()) {
+                    if (layer instanceof FillExtrusionLayer) {
+                        layer.setProperties(PropertyFactory.visibility("none"));
+                    }
+                }
                 readyMap = map;
                 readyStyle = style;
                 showRouteButton.setEnabled(true);
+                showRegionButton.setEnabled(true);
                 status.setText("Map ready away from test area • download first, then go offline");
             });
         });
@@ -189,7 +214,7 @@ public class MainActivity extends Activity {
         downloadButton.setEnabled(true);
         downloadButton.setText(region == null ? "Download selected region" : "Check / resume region");
         if (region == null) {
-            offlineStatus.setText(REGION_NAMES[index] + ": not downloaded (zoom " + (index == 0 ? "9–16" : "9–12") + ")");
+            offlineStatus.setText(REGION_NAMES[index] + ": not downloaded (zoom " + (index <= 1 ? "9–16" : "9–12") + ")");
             return;
         }
         region.getStatus(new OfflineRegion.OfflineRegionStatusCallback() {
@@ -198,7 +223,11 @@ public class MainActivity extends Activity {
                 offlineStatus.setText(REGION_NAMES[index] + ": " +
                     (st.isComplete() ? "COMPLETE" : "incomplete") + " • " +
                     st.getCompletedTileCount() + " tiles • " +
-                    formatSize(st.getCompletedResourceSize()));
+                    formatSize(st.getCompletedResourceSize()) +
+                    "\nConfigured zoom 9–" + (index <= 1 ? "16" : "12") +
+                    " • resources " + st.getCompletedResourceCount() + "/" +
+                    st.getRequiredResourceCount() +
+                    "\nSDK tile count is NOT the theoretical XYZ tile count.");
                 downloadButton.setText(st.isComplete() ? "Region already saved" : "Resume selected region");
                 downloadButton.setEnabled(!st.isComplete());
             }
@@ -243,7 +272,7 @@ public class MainActivity extends Activity {
             .include(new LatLng(a[1], a[3])).build();
         OfflineTilePyramidRegionDefinition definition =
             new OfflineTilePyramidRegionDefinition(STYLE_URL, bounds,
-                9.0, index == 0 ? 16.0 : 12.0, 1.0f, false);
+                9.0, index <= 1 ? 16.0 : 12.0, 1.0f, false);
         OfflineManager.getInstance(this).createOfflineRegion(definition,
             REGION_IDS[index].getBytes(StandardCharsets.UTF_8),
             new OfflineManager.CreateOfflineRegionCallback() {
@@ -277,7 +306,11 @@ public class MainActivity extends Activity {
                     activeRegionIndex = -1;
                     regionPicker.setEnabled(true);
                     offlineStatus.setText(REGION_NAMES[index] + " COMPLETE: " +
-                        tiles + " tiles • " + formatSize(bytes));
+                        tiles + " SDK tiles • " + formatSize(bytes) +
+                        "\nResources " + st.getCompletedResourceCount() + "/" +
+                        st.getRequiredResourceCount() +
+                        " • zoom 9–" + (index <= 1 ? "16" : "12") +
+                        "\nVerify detail offline; tile count may reflect source maxzoom.");
                     downloadButton.setText("Region already saved");
                     downloadButton.setEnabled(false);
                 } else if (tiles >= 2900 || bytes >= 48L * 1024 * 1024) {

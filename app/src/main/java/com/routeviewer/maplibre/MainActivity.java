@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.9 "+networkState());
+        logDebug("START v1.4.10 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.9 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.10 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -375,7 +375,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.9 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.10 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -880,9 +880,10 @@ public class MainActivity extends Activity {
                     PropertyFactory.textFont(new String[]{"Noto Sans Regular"}),PropertyFactory.textSize(14f),
                     PropertyFactory.textColor("#FFFFFF"),PropertyFactory.textHaloColor("#30376A"),
                     PropertyFactory.textHaloWidth(0.7f),PropertyFactory.textHaloBlur(0.25f),PropertyFactory.textLetterSpacing(0.08f),
-                    PropertyFactory.textAllowOverlap(true),PropertyFactory.textIgnorePlacement(true));
+                    PropertyFactory.textAllowOverlap(false),PropertyFactory.textIgnorePlacement(false),
+                    PropertyFactory.textPadding(6f),PropertyFactory.symbolSpacing(300f));
                 layer.setMinZoom(13f);
-                if(style.getLayer("numbered-stops")!=null)style.addLayerBelow(layer,"numbered-stops");else style.addLayer(layer);
+                style.addLayer(layer);
             }else source.setGeoJson(FeatureCollection.fromFeatures(labels));
             // Hide black labels only on features entirely within the route corridor.
             // Partial features remain black outside the route; duplicate labels are possible.
@@ -903,6 +904,7 @@ public class MainActivity extends Activity {
             Expression outside=Expression.Converter.convert(new JSONArray().put("!").put(new JSONArray().put("within").put(area)).toString());
             for(Layer l:style.getLayers())if(l instanceof SymbolLayer && "transportation_name".equals(((SymbolLayer)l).getSourceLayer())){
                 SymbolLayer sl=(SymbolLayer)l;
+                sl.setProperties(PropertyFactory.textAllowOverlap(false),PropertyFactory.textIgnorePlacement(false));
                 if(!originalRoadFilters.containsKey(sl.getId()))originalRoadFilters.put(sl.getId(),sl.getFilter());
                 Expression original=originalRoadFilters.get(sl.getId());
                 sl.setFilter(original==null?outside:Expression.all(original,outside));
@@ -1192,7 +1194,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.9\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.10\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

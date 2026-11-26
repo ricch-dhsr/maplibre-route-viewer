@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.12 "+networkState());
+        logDebug("START v1.4.13 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.12 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.13 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -375,7 +375,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.12 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.13 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -804,9 +804,9 @@ public class MainActivity extends Activity {
             }
             label.setProperties(PropertyFactory.textColor("#000000"),
                 PropertyFactory.textHaloColor("#FFFFFF"),
-                PropertyFactory.textHaloWidth(0.7f),
+                PropertyFactory.textHaloWidth(1.5f),
                 PropertyFactory.textLetterSpacing(0.08f),
-                PropertyFactory.textHaloBlur(0.25f));
+                PropertyFactory.textHaloBlur(0.0f));
             labelCount++;
         }
         LineLayer border=new LineLayer("route-line-border","route-source");
@@ -1208,7 +1208,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.12\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.13\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

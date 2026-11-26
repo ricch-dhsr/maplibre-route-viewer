@@ -62,6 +62,8 @@ import org.maplibre.geojson.Point;
 public class MainActivity extends Activity {
     private MapView mapView;
     private TextView status, offlineStatus, mileage;
+    private Button compass;
+    private boolean rotationUnlocked=false;
     private Button downloadButton, showRouteButton, showRegionButton, diagnosticButton;
     private Spinner regionPicker;
     private final java.util.HashMap<String, OfflineRegion> savedRegions = new java.util.HashMap<>();
@@ -124,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.4 "+networkState());
+        logDebug("START v1.4.5 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -149,12 +151,27 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.4 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.5 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
-        frame.addView(status, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
-        mileage=new TextView(this); mileage.setTextColor(Color.WHITE); mileage.setPadding(12,12,18,12); mileage.setBackgroundColor(0xBB182A36); frame.addView(mileage,new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT));
+        LinearLayout header=new LinearLayout(this);
+        header.setBackgroundColor(0xBB182A36);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        status.setBackgroundColor(Color.TRANSPARENT);
+        header.addView(status,new LinearLayout.LayoutParams(0,-2,1));
+        mileage=new TextView(this); mileage.setTextColor(Color.WHITE); mileage.setGravity(Gravity.RIGHT); mileage.setPadding(12,12,18,12);
+        header.addView(mileage,new LinearLayout.LayoutParams(-2,-2));
+        frame.addView(header,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
+        compass=new Button(this);
+        compass.setAllCaps(false);
+        compass.setText("↑ N");
+        compass.setContentDescription("North up locked. Long press to unlock rotation.");
+        FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+        frame.addView(compass,cp);
+        header.addOnLayoutChangeListener((v,l,t,rr,b,ol,ot,orr,ob)->{if(cp.topMargin!=b-t){cp.topMargin=b-t;compass.setLayoutParams(cp);}});
+        compass.setOnClickListener(v->lockNorth());
+        compass.setOnLongClickListener(v->{if(readyMap==null)return true;rotationUnlocked=true;readyMap.getUiSettings().setRotateGesturesEnabled(true);updateCompass();Toast.makeText(this,"Rotation unlocked. Tap compass to lock north up.",Toast.LENGTH_SHORT).show();return true;});
 
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
@@ -260,7 +277,7 @@ public class MainActivity extends Activity {
         menuButton.setOnClickListener(v -> {controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
         floating.addView(menuButton);
         Button fit=new Button(this); fit.setText("Fit Route");
-        fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(new org.maplibre.android.camera.CameraPosition.Builder(readyMap.getCameraPosition()).bearing(0).build()));readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
+        fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {lockNorth();readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
         floating.addView(fit);
         frame.addView(floating,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.RIGHT));
         floating.setVisibility(android.view.View.GONE);
@@ -276,8 +293,9 @@ public class MainActivity extends Activity {
                 .newLatLngZoom(new LatLng(40.6, -67.5), 7.0));
             // Keep the map flat even if the user accidentally performs a tilt gesture.
             map.getUiSettings().setTiltGesturesEnabled(false);
-            map.getUiSettings().setRotateGesturesEnabled(true);
-            map.getUiSettings().setCompassEnabled(true);
+            map.getUiSettings().setRotateGesturesEnabled(false);
+            map.getUiSettings().setCompassEnabled(false);
+            map.addOnCameraMoveListener(() -> updateCompass());
             map.addOnCameraIdleListener(() -> updateHouseDensity());
             map.setMaxPitchPreference(0.0);
             readyMap=map;
@@ -349,7 +367,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.4 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.5 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -783,6 +801,17 @@ public class MainActivity extends Activity {
         return route;
     }
 
+    private void updateCompass(){
+        if(compass==null || readyMap==null)return;
+        int bearing=(int)Math.round((readyMap.getCameraPosition().bearing+360)%360)%360;
+        compass.setText(rotationUnlocked?"N "+bearing+"°":"↑ N");
+        compass.setContentDescription(rotationUnlocked?"Rotation unlocked. Tap to lock north up.":"North up locked. Long press to unlock rotation.");
+    }
+    private void lockNorth(){
+        rotationUnlocked=false;
+        if(readyMap!=null){readyMap.getUiSettings().setRotateGesturesEnabled(false);readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(new org.maplibre.android.camera.CameraPosition.Builder(readyMap.getCameraPosition()).bearing(0).build()));}
+        updateCompass();
+    }
     private void updateHouseDensity(){
         if(readyStyle==null || readyMap==null)return;
         Layer layer=readyStyle.getLayer("delivery-house-numbers");
@@ -868,16 +897,18 @@ public class MainActivity extends Activity {
             readyStyle.addLayer(layer);
             try {
                 routeBounds=bounds.build();
-                readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(new org.maplibre.android.camera.CameraPosition.Builder(readyMap.getCameraPosition()).bearing(0).build()));
+                lockNorth();
                 readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));
             } catch(Exception e) {
                 JSONObject s=stops.getJSONObject(0);
                 readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(new LatLng(s.getDouble("lat"),s.getDouble("lon")),16));
             }
-            long meters=0; for(int i=0;i<legs.length();i++) meters+=legs.getJSONObject(i).getJSONObject("summary").getLong("lengthInMeters");
+            long meters=0,seconds=0; boolean timeKnown=true;
+            for(int i=0;i<legs.length();i++){JSONObject summary=legs.getJSONObject(i).getJSONObject("summary");meters+=summary.getLong("lengthInMeters");long s=summary.optLong("travelTimeInSeconds",-1);if(s<0)timeKnown=false;else seconds+=s;}
             status.setText(RouteInstaller.label(this,slot)+" • "+stops.length()+" stops");
             status.setGravity(Gravity.LEFT);
-            mileage.setText(String.format(Locale.US,"%.1f mi",meters/1609.344));
+            long minutes=Math.round(seconds/60.0);
+            mileage.setText(String.format(Locale.US,"%.1f mi",meters/1609.344)+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
             logDebug("ROUTE "+slot+" stops="+stops.length()+" markers="+markers.size()+" points="+points);
             hideControls();
             mapView.postDelayed(() -> snapshotDebug("route + 5 seconds"),5000);
@@ -1004,7 +1035,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.4\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.5\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

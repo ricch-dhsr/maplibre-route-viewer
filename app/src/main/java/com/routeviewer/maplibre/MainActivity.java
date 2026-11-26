@@ -368,6 +368,8 @@ public class MainActivity extends Activity {
                     style.addLayer(houseNumbers);
                 }
                 readyMap = map;
+                originalRoadFilters.clear();
+                originalStreetSizes.clear();
                 readyStyle = style;
                 updateHouseDensity();
                 showRouteButton.setEnabled(true);
@@ -825,6 +827,7 @@ public class MainActivity extends Activity {
     }
 
     private List<Feature> activeLabelRoute;
+    private final java.util.Map<String,Expression> originalRoadFilters=new java.util.HashMap<>();
     private static final double LABEL_SX=111320.0*Math.cos(Math.toRadians(42.5)), LABEL_SY=111320.0;
     private org.locationtech.jts.geom.LineString labelLine(org.locationtech.jts.geom.GeometryFactory gf,List<Point> pts){
         org.locationtech.jts.geom.Coordinate[] cs=new org.locationtech.jts.geom.Coordinate[pts.size()];
@@ -881,14 +884,40 @@ public class MainActivity extends Activity {
                 layer.setMinZoom(13f);
                 if(style.getLayer("numbered-stops")!=null)style.addLayerBelow(layer,"numbered-stops");else style.addLayer(layer);
             }else source.setGeoJson(FeatureCollection.fromFeatures(labels));
-            // Suppress only fully contained named features; partial roads retain ordinary labels.
-            // Dedicated route labels are rendered above the regular labels.
+            // Hide black labels only on features entirely within the route corridor.
+            // Partial features remain black outside the route; duplicate labels are possible.
+            JSONArray polygons=new JSONArray();
+            for(int i=0;i<corridor.getNumGeometries();i++){
+                org.locationtech.jts.geom.Geometry g=corridor.getGeometryN(i);
+                if(!(g instanceof org.locationtech.jts.geom.Polygon))continue;
+                org.locationtech.jts.geom.Polygon poly=(org.locationtech.jts.geom.Polygon)g;
+                JSONArray rings=new JSONArray();
+                for(int k=-1;k<poly.getNumInteriorRing();k++){
+                    JSONArray ring=new JSONArray();
+                    for(org.locationtech.jts.geom.Coordinate q:(k<0?poly.getExteriorRing():poly.getInteriorRingN(k)).getCoordinates())ring.put(new JSONArray().put(q.x/LABEL_SX).put(q.y/LABEL_SY));
+                    rings.put(ring);
+                }
+                polygons.put(rings);
+            }
+            JSONObject area=new JSONObject().put("type","MultiPolygon").put("coordinates",polygons);
+            Expression outside=Expression.Converter.convert(new JSONArray().put("!").put(new JSONArray().put("within").put(area)).toString());
+            for(Layer l:style.getLayers())if(l instanceof SymbolLayer && "transportation_name".equals(((SymbolLayer)l).getSourceLayer())){
+                SymbolLayer sl=(SymbolLayer)l;
+                if(!originalRoadFilters.containsKey(sl.getId()))originalRoadFilters.put(sl.getId(),sl.getFilter());
+                Expression original=originalRoadFilters.get(sl.getId());
+                sl.setFilter(original==null?outside:Expression.all(original,outside));
+            }
             logDebug("LABEL SUMMARY roads="+roads.size()+" matched="+labels.size()+" names="+matchedNames.size());
         }catch(Exception e){logDebug("LABEL MATCH ERROR "+e);}
     }
 
     private void clearRouteLayers(Style style) {
         activeLabelRoute=null;
+        for(java.util.Map.Entry<String,Expression> e:originalRoadFilters.entrySet()){
+            Layer l=style.getLayer(e.getKey());
+            if(l instanceof SymbolLayer)((SymbolLayer)l).setFilter(e.getValue()==null?Expression.literal(true):e.getValue());
+        }
+        originalRoadFilters.clear();
         if(style.getLayer("route-street-labels")!=null)style.removeLayer("route-street-labels");
         if(style.getSource("route-street-source")!=null)style.removeSource("route-street-source");
         for (String id : new String[]{"numbered-stops","here-route-line","tomtom-route-line","route-line-border"}) {

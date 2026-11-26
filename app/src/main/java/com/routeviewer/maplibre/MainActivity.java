@@ -775,11 +775,11 @@ public class MainActivity extends Activity {
         LineLayer border=new LineLayer("route-line-border","route-source");
         border.withProperties(PropertyFactory.lineColor("#303BB5"),
             PropertyFactory.lineWidth(Expression.interpolate(Expression.linear(),Expression.zoom(),Expression.stop(9,4f),Expression.stop(13,6f),Expression.stop(17,12f))),
-            PropertyFactory.lineCap(PropertyFactory.LINE_CAP_ROUND),PropertyFactory.lineJoin(PropertyFactory.LINE_JOIN_ROUND));
+            PropertyFactory.lineCap("round"),PropertyFactory.lineJoin("round"));
         LineLayer line=new LineLayer(id,"route-source");
         line.withProperties(PropertyFactory.lineColor("#6976EF"),
             PropertyFactory.lineWidth(Expression.interpolate(Expression.linear(),Expression.zoom(),Expression.stop(9,2.5f),Expression.stop(13,4f),Expression.stop(17,9f))),
-            PropertyFactory.lineCap(PropertyFactory.LINE_CAP_ROUND),PropertyFactory.lineJoin(PropertyFactory.LINE_JOIN_ROUND));
+            PropertyFactory.lineCap("round"),PropertyFactory.lineJoin("round"));
         if(anchor==null && style.getLayer("delivery-house-numbers")!=null)anchor="delivery-house-numbers";
         if(anchor==null && style.getLayer("numbered-stops")!=null)anchor="numbered-stops";
         if(anchor!=null){style.addLayerBelow(border,anchor);style.addLayerBelow(line,anchor);}

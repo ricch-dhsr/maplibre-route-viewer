@@ -758,6 +758,7 @@ public class MainActivity extends Activity {
     }
 
 
+    private final java.util.Map<String,Expression> originalStreetSizes=new java.util.HashMap<>();
     private void addStyledRouteLine(Style style,String id) {
         String anchor=null;
         int labelCount=0;
@@ -766,6 +767,32 @@ public class MainActivity extends Activity {
             SymbolLayer label=(SymbolLayer)candidate;
             if(!"transportation_name".equals(label.getSourceLayer()))continue;
             if(anchor==null)anchor=label.getId();
+            // Scale the original size, preserving zoom-dependent expressions.
+            // Cache the original property so repeated route selections do not compound the increase.
+            if(!originalStreetSizes.containsKey(label.getId())){
+                org.maplibre.android.style.layers.PropertyValue<Float> size=label.getTextSize();
+                if(size.isExpression()) originalStreetSizes.put(label.getId(),size.getExpression());
+                else if(size.isValue()) originalStreetSizes.put(label.getId(),Expression.literal(size.getValue()));
+            }
+            Expression originalSize=originalStreetSizes.get(label.getId());
+            if(originalSize!=null){
+                // A top-level zoom interpolation must remain top-level in MapLibre.
+                try {
+                    Object parsed=new org.json.JSONTokener(originalSize.toString()).nextValue();
+                    if(parsed instanceof Number){label.setProperties(PropertyFactory.textSize(((Number)parsed).floatValue()*1.1f));}
+                    JSONArray expr=parsed instanceof JSONArray?(JSONArray)parsed:new JSONArray();
+                    String op=expr.optString(0);
+                    if("interpolate".equals(op)||"step".equals(op)){
+                        int start="interpolate".equals(op)?4:2;
+                        for(int k=start;k<expr.length();k+=2){
+                            Object value=expr.get(k);
+                            if(value instanceof Number)expr.put(k,((Number)value).doubleValue()*1.1);
+                            else expr.put(k,new JSONArray().put("*").put(value).put(1.1));
+                        }
+                        label.setProperties(PropertyFactory.textSize(Expression.Converter.convert(expr.toString())));
+                    }else if(!(parsed instanceof Number)) label.setProperties(PropertyFactory.textSize(Expression.product(originalSize,Expression.literal(1.1))));
+                }catch(Exception e){logDebug("Street size unchanged "+label.getId()+" "+e);}
+            }
             label.setProperties(PropertyFactory.textColor("#FFFFFF"),
                 PropertyFactory.textHaloColor("#30376A"),
                 PropertyFactory.textHaloWidth(0.7f),

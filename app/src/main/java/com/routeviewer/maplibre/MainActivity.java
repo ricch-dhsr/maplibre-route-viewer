@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.5 "+networkState());
+        logDebug("START v1.4.6 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.5 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.6 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -367,7 +367,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.5 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.6 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -749,9 +749,7 @@ public class MainActivity extends Activity {
             }
             style.addSource(new GeoJsonSource("route-source",
                 Feature.fromGeometry(LineString.fromLngLats(coords))));
-            LineLayer line = new LineLayer("here-route-line", "route-source");
-            line.withProperties(PropertyFactory.lineColor("#1769AA"), PropertyFactory.lineWidth(4f));
-            style.addLayerBelow(line, "numbered-stops");
+            addStyledRouteLine(style,"here-route-line");
         }
         routeBounds=bounds.build();
         map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
@@ -760,8 +758,37 @@ public class MainActivity extends Activity {
     }
 
 
+    private void addStyledRouteLine(Style style,String id) {
+        String anchor=null;
+        int labelCount=0;
+        for(Layer candidate:style.getLayers()){
+            if(!(candidate instanceof SymbolLayer))continue;
+            SymbolLayer label=(SymbolLayer)candidate;
+            if(!"transportation_name".equals(label.getSourceLayer()))continue;
+            if(anchor==null)anchor=label.getId();
+            label.setProperties(PropertyFactory.textColor("#FFFFFF"),
+                PropertyFactory.textHaloColor("#30376A"),
+                PropertyFactory.textHaloWidth(1.0f),
+                PropertyFactory.textHaloBlur(0.25f));
+            labelCount++;
+        }
+        LineLayer border=new LineLayer("route-line-border","route-source");
+        border.withProperties(PropertyFactory.lineColor("#303BB5"),
+            PropertyFactory.lineWidth(Expression.interpolate(Expression.linear(),Expression.zoom(),Expression.stop(9,4f),Expression.stop(13,6f),Expression.stop(17,12f))),
+            PropertyFactory.lineCap(PropertyFactory.LINE_CAP_ROUND),PropertyFactory.lineJoin(PropertyFactory.LINE_JOIN_ROUND));
+        LineLayer line=new LineLayer(id,"route-source");
+        line.withProperties(PropertyFactory.lineColor("#6976EF"),
+            PropertyFactory.lineWidth(Expression.interpolate(Expression.linear(),Expression.zoom(),Expression.stop(9,2.5f),Expression.stop(13,4f),Expression.stop(17,9f))),
+            PropertyFactory.lineCap(PropertyFactory.LINE_CAP_ROUND),PropertyFactory.lineJoin(PropertyFactory.LINE_JOIN_ROUND));
+        if(anchor==null && style.getLayer("delivery-house-numbers")!=null)anchor="delivery-house-numbers";
+        if(anchor==null && style.getLayer("numbered-stops")!=null)anchor="numbered-stops";
+        if(anchor!=null){style.addLayerBelow(border,anchor);style.addLayerBelow(line,anchor);}
+        else{style.addLayer(border);style.addLayer(line);}
+        logDebug("ROUTE STYLE anchor="+anchor+" road labels="+labelCount);
+    }
+
     private void clearRouteLayers(Style style) {
-        for (String id : new String[]{"numbered-stops","here-route-line","tomtom-route-line"}) {
+        for (String id : new String[]{"numbered-stops","here-route-line","tomtom-route-line","route-line-border"}) {
             if (style.getLayer(id) != null) style.removeLayer(id);
         }
         for (String id : new String[]{"stops-source","route-source"}) {
@@ -888,9 +915,7 @@ public class MainActivity extends Activity {
                 }
             }
             readyStyle.addSource(new GeoJsonSource("route-source",FeatureCollection.fromFeatures(lines)));
-            LineLayer line=new LineLayer("tomtom-route-line","route-source");
-            line.withProperties(PropertyFactory.lineColor("#1769AA"),PropertyFactory.lineWidth(4f));
-            readyStyle.addLayer(line);
+            addStyledRouteLine(readyStyle,"tomtom-route-line");
             readyStyle.addSource(new GeoJsonSource("stops-source",FeatureCollection.fromFeatures(markers)));
             SymbolLayer layer=new SymbolLayer("numbered-stops","stops-source");
             layer.withProperties(PropertyFactory.iconImage(Expression.get("icon")),PropertyFactory.iconAllowOverlap(true),PropertyFactory.iconIgnorePlacement(true),PropertyFactory.iconSize(1f));
@@ -1035,7 +1060,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.5\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.6\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

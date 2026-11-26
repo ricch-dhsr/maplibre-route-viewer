@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.7 "+networkState());
+        logDebug("START v1.4.8 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.7 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.8 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -373,7 +373,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.7 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.8 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -768,14 +768,36 @@ public class MainActivity extends Activity {
     private void addStyledRouteLine(Style style,String id,List<Feature> routeLines) {
         Expression routeColor=null, routeHalo=null;
         try {
-            JSONArray coordinates=new JSONArray();
-            for(Feature f:routeLines) if(f.geometry() instanceof LineString) {
-                JSONArray segment=new JSONArray();
-                for(Point p:((LineString)f.geometry()).coordinates()) segment.put(new JSONArray().put(p.longitude()).put(p.latitude()));
-                coordinates.put(segment);
+            // A road must lie within the route corridor, not merely touch it.
+            org.locationtech.jts.geom.GeometryFactory gf=new org.locationtech.jts.geom.GeometryFactory();
+            java.util.List<org.locationtech.jts.geom.Geometry> segments=new ArrayList<>();
+            final double sx=111320.0*Math.cos(Math.toRadians(42.5)), sy=111320.0;
+            for(Feature f:routeLines) if(f.geometry() instanceof LineString){
+                List<Point> pts=((LineString)f.geometry()).coordinates();
+                if(pts.size()<2)continue;
+                org.locationtech.jts.geom.Coordinate[] cs=new org.locationtech.jts.geom.Coordinate[pts.size()];
+                for(int i=0;i<pts.size();i++)cs[i]=new org.locationtech.jts.geom.Coordinate(pts.get(i).longitude()*sx,pts.get(i).latitude()*sy);
+                segments.add(gf.createLineString(cs));
             }
-            JSONObject geometry=new JSONObject().put("type","MultiLineString").put("coordinates",coordinates);
-            JSONArray near=new JSONArray().put("<=").put(new JSONArray().put("distance").put(geometry)).put(8);
+            org.locationtech.jts.geom.Geometry corridor=gf.buildGeometry(segments).buffer(12.0,4);
+            corridor=org.locationtech.jts.simplify.TopologyPreservingSimplifier.simplify(corridor,1.0);
+            JSONArray polygons=new JSONArray();
+            for(int i=0;i<corridor.getNumGeometries();i++){
+                org.locationtech.jts.geom.Geometry part=corridor.getGeometryN(i);
+                if(!(part instanceof org.locationtech.jts.geom.Polygon))continue;
+                org.locationtech.jts.geom.Polygon poly=(org.locationtech.jts.geom.Polygon)part;
+                JSONArray rings=new JSONArray();
+                for(int k=-1;k<poly.getNumInteriorRing();k++){
+                    JSONArray ring=new JSONArray();
+                    org.locationtech.jts.geom.Coordinate[] cs=(k<0?poly.getExteriorRing():poly.getInteriorRingN(k)).getCoordinates();
+                    for(org.locationtech.jts.geom.Coordinate q:cs)ring.put(new JSONArray().put(q.x/sx).put(q.y/sy));
+                    rings.put(ring);
+                }
+                polygons.put(rings);
+            }
+            JSONObject geometry=new JSONObject().put("type","MultiPolygon").put("coordinates",polygons);
+            JSONArray near=new JSONArray().put("within").put(geometry);
+            logDebug("Route label corridor polygons="+polygons.length()+" vertices="+corridor.getNumPoints());
             routeColor=Expression.Converter.convert(new JSONArray().put("case").put(near).put("#FFFFFF").put("#000000").toString());
             routeHalo=Expression.Converter.convert(new JSONArray().put("case").put(near).put("#30376A").put("#FFFFFF").toString());
         }catch(Exception e){logDebug("Route label expression unavailable "+e);}
@@ -1109,7 +1131,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.7\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.8\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

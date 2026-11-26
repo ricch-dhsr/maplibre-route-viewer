@@ -122,7 +122,7 @@ public class MainActivity extends Activity {
         super.onCreate(saved);
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.2 "+networkState());
+        logDebug("START v1.4.3 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -147,7 +147,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.2 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.3 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -284,7 +284,9 @@ public class MainActivity extends Activity {
 
     private void loadMapStyle(MapLibreMap map) {
         logDebug("STYLE requested "+networkState());
-        map.setStyle(new Style.Builder().fromUri(STYLE_URL), style -> {
+        String pinned = offlineStyleJson();
+        Style.Builder builder = pinned == null ? new Style.Builder().fromUri(STYLE_URL) : new Style.Builder().fromJson(pinned);
+        map.setStyle(builder, style -> {
                 // Replace extrusion rendering with a flat footprint layer using
                 // the same source, source-layer, and feature filter.
                 // Hiding extrusions alone removed buildings in Greenfield.
@@ -339,7 +341,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.2 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.3 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -980,7 +982,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.2\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.3\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");
@@ -1030,6 +1032,60 @@ public class MainActivity extends Activity {
             }finally{p.destroy();}
         }catch(Exception e){b.append("Native log unavailable ").append(e).append("\n");}
         logDebug(b.toString());
+    }
+
+
+    // Use the exact tile cache key associated with the largest installed coverage.
+    // Read only: never rename tiles, alter regions, or delete the database.
+    private String offlineStyleJson() {
+        java.io.File file = new java.io.File(getFilesDir(),"mbgl-offline.db");
+        if(!file.exists()) return null;
+        try(android.database.sqlite.SQLiteDatabase db=android.database.sqlite.SQLiteDatabase.openDatabase(file.getAbsolutePath(),null,android.database.sqlite.SQLiteDatabase.OPEN_READONLY|android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS)){
+            String template;
+            try(android.database.Cursor cur=db.rawQuery("SELECT t.url_template,COUNT(*) AS n FROM region_tiles rt JOIN tiles t ON t.id=rt.tile_id WHERE t.url_template LIKE 'https://tiles.openfreemap.org/%' AND t.url_template LIKE '%.pbf' AND length(t.data)>0 GROUP BY t.url_template ORDER BY n DESC LIMIT 1",null)){
+                if(!cur.moveToFirst()) {logDebug("PIN no downloaded vector tiles");return null;}
+                template=cur.getString(0);
+                logDebug("PIN selected "+template+" region links="+cur.getLong(1));
+            }
+            JSONObject json=readCachedJson(db,STYLE_URL);
+            JSONObject source=json.getJSONObject("sources").getJSONObject("openmaptiles");
+            String sourceUrl=template.contains("/backup_planet/")?"https://tiles.openfreemap.org/backup_planet":"https://tiles.openfreemap.org/planet";
+            // Inline the exact template to avoid a mutable TileJSON redirect.
+            // Copy source metadata only if the cached TileJSON matches this template.
+            int maxZoom=14;
+            int minZoom=0;
+            try{
+                JSONObject tileJson=readCachedJson(db,sourceUrl);
+                JSONArray urls=tileJson.optJSONArray("tiles");
+                if(urls!=null && template.equals(urls.optString(0))){
+                    maxZoom=tileJson.optInt("maxzoom",14);
+                    minZoom=tileJson.optInt("minzoom",0);
+                    if(tileJson.has("attribution"))source.put("attribution",tileJson.get("attribution"));
+                    if(tileJson.has("bounds"))source.put("bounds",tileJson.get("bounds"));
+                    if(tileJson.has("scheme"))source.put("scheme",tileJson.get("scheme"));
+                }
+            }catch(Exception e){logDebug("PIN TileJSON metadata fallback "+e);}
+            source.remove("url");
+            source.put("tiles",new JSONArray().put(template));
+            source.put("minzoom",minZoom);
+            source.put("maxzoom",maxZoom);
+            logDebug("PIN style source "+source);
+            return json.toString();
+        }catch(Exception e){logDebug("PIN failed; using original style "+e);return null;}
+    }
+    private JSONObject readCachedJson(android.database.sqlite.SQLiteDatabase db,String url) throws Exception {
+        try(android.database.Cursor cur=db.rawQuery("SELECT data,compressed FROM resources WHERE url=?",new String[]{url})){
+            if(!cur.moveToFirst() || cur.isNull(0))throw new java.io.IOException("Missing cached resource "+url);
+            byte[] bytes=cur.getBlob(0);
+            if(cur.getInt(1)!=0){
+                try(java.io.InputStream in=new java.util.zip.InflaterInputStream(new java.io.ByteArrayInputStream(bytes)); ByteArrayOutputStream out=new ByteArrayOutputStream()){
+                    byte[] buf=new byte[4096];int n;
+                    while((n=in.read(buf))!=-1){if(out.size()+n>4000000)throw new java.io.IOException("Cached JSON too large");out.write(buf,0,n);}
+                    bytes=out.toByteArray();
+                }
+            }
+            return new JSONObject(new String(bytes,StandardCharsets.UTF_8));
+        }
     }
 
     private String readAsset(String filename) throws Exception {

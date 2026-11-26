@@ -121,6 +121,7 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
         logDebug("START v1.4.4 "+networkState());
@@ -259,7 +260,7 @@ public class MainActivity extends Activity {
         menuButton.setOnClickListener(v -> {controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
         floating.addView(menuButton);
         Button fit=new Button(this); fit.setText("Fit Route");
-        fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
+        fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(new org.maplibre.android.camera.CameraPosition.Builder(readyMap.getCameraPosition()).bearing(0).build()));readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
         floating.addView(fit);
         frame.addView(floating,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.RIGHT));
         floating.setVisibility(android.view.View.GONE);
@@ -867,6 +868,7 @@ public class MainActivity extends Activity {
             readyStyle.addLayer(layer);
             try {
                 routeBounds=bounds.build();
+                readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(new org.maplibre.android.camera.CameraPosition.Builder(readyMap.getCameraPosition()).bearing(0).build()));
                 readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));
             } catch(Exception e) {
                 JSONObject s=stops.getJSONObject(0);
@@ -1118,11 +1120,14 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onStart() { super.onStart(); mapView.onStart(); }
-    private void refreshSlotLabels(){for(String s:routeSlots){Button b=slotButtons.get(s);if(b!=null)b.setText(RouteInstaller.label(this,s));}}
+    private final android.content.BroadcastReceiver routeChanged=new android.content.BroadcastReceiver(){
+ @Override public void onReceive(Context c,android.content.Intent i){refreshSlotLabels();if(i.getStringExtra("route").equals(pendingSlot))showSavedRoute(pendingSlot);}
+ };
+ private void refreshSlotLabels(){for(String s:routeSlots){Button b=slotButtons.get(s);if(b!=null)b.setText(RouteInstaller.label(this,s));}}
     @Override protected void onResume() { super.onResume(); mapView.onResume(); refreshSlotLabels(); }
     @Override protected void onPause() { mapView.onPause(); super.onPause(); }
     @Override protected void onStop() { mapView.onStop(); super.onStop(); }
-    @Override protected void onDestroy() { mapView.onDestroy(); super.onDestroy(); }
+    @Override protected void onDestroy() { unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
     @Override public void onLowMemory() { super.onLowMemory(); mapView.onLowMemory(); }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); mapView.onSaveInstanceState(state);

@@ -61,7 +61,7 @@ import org.maplibre.geojson.Point;
 /** v0.9: adds optional house-number labels to existing offline vector tiles. */
 public class MainActivity extends Activity {
     private MapView mapView;
-    private TextView status, offlineStatus;
+    private TextView status, offlineStatus, mileage;
     private Button downloadButton, showRouteButton, showRegionButton, diagnosticButton;
     private Spinner regionPicker;
     private final java.util.HashMap<String, OfflineRegion> savedRegions = new java.util.HashMap<>();
@@ -88,6 +88,7 @@ public class MainActivity extends Activity {
     private boolean reloading;
     private org.maplibre.android.camera.CameraPosition reloadCamera;
     private LatLngBounds routeBounds;
+    private final java.util.Map<String,Button> slotButtons=new java.util.HashMap<>();
     private final String[] routeSlots = {"AM","PM","EX"};
 
     private static final String STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
@@ -122,7 +123,7 @@ public class MainActivity extends Activity {
         super.onCreate(saved);
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.3 "+networkState());
+        logDebug("START v1.4.4 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -147,11 +148,12 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.3 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.4 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
         frame.addView(status, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        mileage=new TextView(this); mileage.setTextColor(Color.WHITE); mileage.setPadding(12,12,18,12); mileage.setBackgroundColor(0xBB182A36); frame.addView(mileage,new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT));
 
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
@@ -168,7 +170,8 @@ public class MainActivity extends Activity {
         LinearLayout slots = new LinearLayout(this);
         for (String slot : routeSlots) {
             Button b = new Button(this);
-            b.setText(slot);
+            slotButtons.put(slot,b);
+            b.setText(RouteInstaller.label(this,slot));
             slots.addView(b, new LinearLayout.LayoutParams(0,-2,1));
             b.setOnClickListener(v -> showSavedRoute(slot));
         }
@@ -272,6 +275,9 @@ public class MainActivity extends Activity {
                 .newLatLngZoom(new LatLng(40.6, -67.5), 7.0));
             // Keep the map flat even if the user accidentally performs a tilt gesture.
             map.getUiSettings().setTiltGesturesEnabled(false);
+            map.getUiSettings().setRotateGesturesEnabled(true);
+            map.getUiSettings().setCompassEnabled(true);
+            map.addOnCameraIdleListener(() -> updateHouseDensity());
             map.setMaxPitchPreference(0.0);
             readyMap=map;
             mapView.addOnDidFailLoadingMapListener(error -> logDebug("MAP LOAD FAILURE "+error));
@@ -338,10 +344,11 @@ public class MainActivity extends Activity {
                 }
                 readyMap = map;
                 readyStyle = style;
+                updateHouseDensity();
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.3 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.4 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -755,7 +762,7 @@ public class MainActivity extends Activity {
         if (!java.util.Arrays.asList(routeSlots).contains(slot)) throw new Exception("Expected AM, PM or EX");
         if (!"tomtom".equals(route.getString("provider"))) throw new Exception("Expected TomTom provider");
         JSONArray stops = route.getJSONArray("stops"), legs = route.getJSONArray("legs");
-        if (stops.length()<1 || stops.length()>150 || legs.length()!=stops.length()-1)
+        if (stops.length()<1 || stops.length()>150 || legs.length()!=stops.length()+(route.has("shop")?1:-1))
             throw new Exception("Invalid stop or leg count");
         for(int i=0;i<stops.length();i++){
             JSONObject s=stops.getJSONObject(i);
@@ -775,8 +782,13 @@ public class MainActivity extends Activity {
         return route;
     }
 
+    private void updateHouseDensity(){
+        if(readyStyle==null || readyMap==null)return;
+        Layer layer=readyStyle.getLayer("delivery-house-numbers");
+        if(layer instanceof SymbolLayer){double z=readyMap.getCameraPosition().zoom; layer.setProperties(PropertyFactory.textAllowOverlap(z>=17),PropertyFactory.textPadding(z<16?2f:0f));}
+    }
     private void installRoute(String raw) throws Exception {
-        JSONObject route=validateRoute(raw);
+        JSONObject route=RouteInstaller.validate(raw);
         String slot=route.getString("route");
         android.util.AtomicFile file=new android.util.AtomicFile(new java.io.File(getFilesDir(),"route_"+slot+".json"));
         java.io.FileOutputStream out=file.startWrite();
@@ -784,6 +796,7 @@ public class MainActivity extends Activity {
             out.write(raw.getBytes(StandardCharsets.UTF_8));
             file.finishWrite(out);
         } catch(Exception e) { file.failWrite(out); throw e; }
+        refreshSlotLabels();
         pendingSlot=slot;
         if(readyStyle!=null) showSavedRoute(slot);
         else status.setText(slot+" saved; waiting for map");
@@ -792,7 +805,7 @@ public class MainActivity extends Activity {
     private void showSavedRoute(String slot) {
         try {
             android.util.AtomicFile file=new android.util.AtomicFile(new java.io.File(getFilesDir(),"route_"+slot+".json"));
-            JSONObject route=validateRoute(new String(file.readFully(),StandardCharsets.UTF_8));
+            JSONObject route=RouteInstaller.validate(new String(file.readFully(),StandardCharsets.UTF_8));
             pendingSlot=slot;
             demoRouteShown=false;
             if(readyStyle==null || readyMap==null) return;
@@ -809,7 +822,7 @@ public class MainActivity extends Activity {
                     if(j==i) continue;
                     JSONObject other=stops.getJSONObject(j);
                     if(lat==other.getDouble("lat") && lon==other.getDouble("lon")){
-                        if(j>i) later=true;
+                        if(j<i) later=true;
                         else count++;
                     }
                 }
@@ -823,6 +836,10 @@ public class MainActivity extends Activity {
                 markers.add(f);
                 bounds.include(new LatLng(lat,lon));
             }
+            JSONObject shop=route.optJSONObject("shop");
+            if(shop!=null){double lat=shop.getDouble("lat"),lon=shop.getDouble("lon");
+                readyStyle.addImage("shop_marker",numberIcon(0,1));
+                Feature f=Feature.fromGeometry(checkedPoint(lat,lon)); f.addStringProperty("icon","shop_marker"); markers.add(f); bounds.include(new LatLng(lat,lon));}
             int points=0;
             for(int i=0;i<legs.length();i++){
                 JSONArray pts=legs.getJSONObject(i).getJSONArray("points");
@@ -855,7 +872,10 @@ public class MainActivity extends Activity {
                 JSONObject s=stops.getJSONObject(0);
                 readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(new LatLng(s.getDouble("lat"),s.getDouble("lon")),16));
             }
-            status.setText(slot+" • "+stops.length()+" stops • "+legs.length()+" legs • "+points+" points");
+            long meters=0; for(int i=0;i<legs.length();i++) meters+=legs.getJSONObject(i).getJSONObject("summary").getLong("lengthInMeters");
+            status.setText(RouteInstaller.label(this,slot)+" • "+stops.length()+" stops");
+            status.setGravity(Gravity.LEFT);
+            mileage.setText(String.format(Locale.US,"%.1f mi",meters/1609.344));
             logDebug("ROUTE "+slot+" stops="+stops.length()+" markers="+markers.size()+" points="+points);
             hideControls();
             mapView.postDelayed(() -> snapshotDebug("route + 5 seconds"),5000);
@@ -882,14 +902,14 @@ public class MainActivity extends Activity {
         Bitmap b = Bitmap.createBitmap(88, 88, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setColor(0xFF1A6DB3); c.drawCircle(44, 44, 39, p);
+        p.setColor(n==0?0xFF278344:0xFF1A6DB3); c.drawCircle(44, 44, 39, p);
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(6);
         p.setColor(Color.WHITE); c.drawCircle(44, 44, 36, p);
         p.setStyle(Paint.Style.FILL); p.setColor(Color.WHITE);
         p.setTextAlign(Paint.Align.CENTER);
         p.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD));
         p.setTextSize(n >= 100 ? 31 : 39);
-        c.drawText(String.valueOf(n), 44, 57, p);
+        c.drawText(n==0?"S":String.valueOf(n), 44, 57, p);
         if(count>1){
             p.setColor(Color.WHITE); c.drawCircle(72,16,16,p);
             p.setColor(0xFFF5B82E); c.drawCircle(72,16,14,p);
@@ -982,7 +1002,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.3\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.4\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");
@@ -1098,7 +1118,8 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onStart() { super.onStart(); mapView.onStart(); }
-    @Override protected void onResume() { super.onResume(); mapView.onResume(); }
+    private void refreshSlotLabels(){for(String s:routeSlots){Button b=slotButtons.get(s);if(b!=null)b.setText(RouteInstaller.label(this,s));}}
+    @Override protected void onResume() { super.onResume(); mapView.onResume(); refreshSlotLabels(); }
     @Override protected void onPause() { mapView.onPause(); super.onPause(); }
     @Override protected void onStop() { mapView.onStop(); super.onStop(); }
     @Override protected void onDestroy() { mapView.onDestroy(); super.onDestroy(); }

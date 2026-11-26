@@ -84,7 +84,7 @@ public class MainActivity extends Activity {
     private boolean demoRouteShown;
     private static final int IMPORT_ROUTE = 1401;
     private String pendingSlot;
-    private LinearLayout controls;
+    private LinearLayout controls, maintenance;
     private Button menuButton;
     private final StringBuilder debugLog = new StringBuilder();
     private boolean reloading;
@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.6 "+networkState());
+        logDebug("START v1.4.7 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.6 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.7 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -180,11 +180,14 @@ public class MainActivity extends Activity {
         ArrayAdapter<String> regionAdapter = new ArrayAdapter<>(
             this, android.R.layout.simple_spinner_dropdown_item, REGION_NAMES);
         regionPicker.setAdapter(regionAdapter);
-        controls.addView(regionPicker);
+        maintenance = new LinearLayout(this);
+        maintenance.setOrientation(LinearLayout.VERTICAL);
+        maintenance.setVisibility(android.view.View.GONE);
+        maintenance.addView(regionPicker);
         showRouteButton = new Button(this);
         showRouteButton.setText("Show demo route (use AFTER disconnecting)");
         showRouteButton.setEnabled(false);
-        controls.addView(showRouteButton);
+        // Demo route is no longer exposed in the UI.
         LinearLayout slots = new LinearLayout(this);
         for (String slot : routeSlots) {
             Button b = new Button(this);
@@ -206,11 +209,11 @@ public class MainActivity extends Activity {
         showRegionButton = new Button(this);
         showRegionButton.setText("Show selected region (AFTER disconnecting)");
         showRegionButton.setEnabled(false);
-        controls.addView(showRegionButton);
+        maintenance.addView(showRegionButton);
         diagnosticButton = new Button(this);
         diagnosticButton.setText("HOUSE NUMBER DIAGNOSTICS (CURRENT VIEW)");
         diagnosticButton.setEnabled(false);
-        controls.addView(diagnosticButton);
+        maintenance.addView(diagnosticButton);
         diagnosticButton.setOnClickListener(v -> runHouseNumberDiagnostics());
         showRegionButton.setOnClickListener(v -> {
             if (readyMap == null || downloading) return;
@@ -239,7 +242,7 @@ public class MainActivity extends Activity {
         offlineStatus.setTextColor(Color.WHITE);
         offlineStatus.setPadding(18, 4, 18, 12);
         offlineStatus.setText("Checking offline maps...");
-        controls.addView(downloadButton);
+        maintenance.addView(downloadButton);
         allButton = new Button(this);
         allButton.setText("Download all Massachusetts");
         allButton.setEnabled(false);
@@ -253,16 +256,19 @@ public class MainActivity extends Activity {
             startOfflineDownload();
         });
         LinearLayout tools = new LinearLayout(this);
-        for(String name:new String[]{"Reload Map","Export Debug Log","Hide"}) {
+        for(String name:new String[]{"Reload Map","Maintenance","Hide"}) {
             Button b=new Button(this); b.setText(name);
             tools.addView(b,new LinearLayout.LayoutParams(0,-2,1));
             b.setOnClickListener(v -> {
                 if(name.equals("Reload Map")) reloadMap();
-                else if(name.equals("Export Debug Log")) exportDebug();
+                else if(name.equals("Maintenance")) maintenance.setVisibility(maintenance.getVisibility()==android.view.View.VISIBLE?android.view.View.GONE:android.view.View.VISIBLE);
                 else hideControls();
             });
         }
         controls.addView(tools);
+        Button exportButton=new Button(this); exportButton.setText("Export Debug Log / Database Diagnostics");
+        exportButton.setOnClickListener(v -> exportDebug()); maintenance.addView(exportButton);
+        controls.addView(maintenance);
         controls.addView(offlineStatus);
         regionPicker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent,
@@ -367,7 +373,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.6 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.7 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -749,7 +755,7 @@ public class MainActivity extends Activity {
             }
             style.addSource(new GeoJsonSource("route-source",
                 Feature.fromGeometry(LineString.fromLngLats(coords))));
-            addStyledRouteLine(style,"here-route-line");
+            addStyledRouteLine(style,"here-route-line",java.util.Collections.singletonList(Feature.fromGeometry(LineString.fromLngLats(coords))));
         }
         routeBounds=bounds.build();
         map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory
@@ -759,7 +765,21 @@ public class MainActivity extends Activity {
 
 
     private final java.util.Map<String,Expression> originalStreetSizes=new java.util.HashMap<>();
-    private void addStyledRouteLine(Style style,String id) {
+    private void addStyledRouteLine(Style style,String id,List<Feature> routeLines) {
+        Expression routeColor=null, routeHalo=null;
+        try {
+            JSONArray coordinates=new JSONArray();
+            for(Feature f:routeLines) if(f.geometry() instanceof LineString) {
+                JSONArray segment=new JSONArray();
+                for(Point p:((LineString)f.geometry()).coordinates()) segment.put(new JSONArray().put(p.longitude()).put(p.latitude()));
+                coordinates.put(segment);
+            }
+            JSONObject geometry=new JSONObject().put("type","MultiLineString").put("coordinates",coordinates);
+            JSONArray near=new JSONArray().put("<=").put(new JSONArray().put("distance").put(geometry)).put(8);
+            routeColor=Expression.Converter.convert(new JSONArray().put("case").put(near).put("#FFFFFF").put("#000000").toString());
+            routeHalo=Expression.Converter.convert(new JSONArray().put("case").put(near).put("#30376A").put("#FFFFFF").toString());
+        }catch(Exception e){logDebug("Route label expression unavailable "+e);}
+
         String anchor=null;
         int labelCount=0;
         for(Layer candidate:style.getLayers()){
@@ -793,11 +813,12 @@ public class MainActivity extends Activity {
                     }else if(!(parsed instanceof Number)) label.setProperties(PropertyFactory.textSize(Expression.product(originalSize,Expression.literal(1.1))));
                 }catch(Exception e){logDebug("Street size unchanged "+label.getId()+" "+e);}
             }
-            label.setProperties(PropertyFactory.textColor("#FFFFFF"),
-                PropertyFactory.textHaloColor("#30376A"),
+            label.setProperties(PropertyFactory.textColor("#000000"),
+                PropertyFactory.textHaloColor("#FFFFFF"),
                 PropertyFactory.textHaloWidth(0.7f),
                 PropertyFactory.textLetterSpacing(0.08f),
                 PropertyFactory.textHaloBlur(0.25f));
+            if(routeColor!=null && routeHalo!=null) try {label.setProperties(PropertyFactory.textColor(routeColor),PropertyFactory.textHaloColor(routeHalo));} catch(Exception e){logDebug("Route label fallback "+e);}
             labelCount++;
         }
         LineLayer border=new LineLayer("route-line-border","route-source");
@@ -943,7 +964,7 @@ public class MainActivity extends Activity {
                 }
             }
             readyStyle.addSource(new GeoJsonSource("route-source",FeatureCollection.fromFeatures(lines)));
-            addStyledRouteLine(readyStyle,"tomtom-route-line");
+            addStyledRouteLine(readyStyle,"tomtom-route-line",lines);
             readyStyle.addSource(new GeoJsonSource("stops-source",FeatureCollection.fromFeatures(markers)));
             SymbolLayer layer=new SymbolLayer("numbered-stops","stops-source");
             layer.withProperties(PropertyFactory.iconImage(Expression.get("icon")),PropertyFactory.iconAllowOverlap(true),PropertyFactory.iconIgnorePlacement(true),PropertyFactory.iconSize(1f));
@@ -1088,7 +1109,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.6\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.7\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

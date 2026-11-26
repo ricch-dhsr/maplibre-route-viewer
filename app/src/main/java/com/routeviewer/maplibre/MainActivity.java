@@ -768,7 +768,8 @@ public class MainActivity extends Activity {
             if(anchor==null)anchor=label.getId();
             label.setProperties(PropertyFactory.textColor("#FFFFFF"),
                 PropertyFactory.textHaloColor("#30376A"),
-                PropertyFactory.textHaloWidth(1.0f),
+                PropertyFactory.textHaloWidth(0.7f),
+                PropertyFactory.textLetterSpacing(0.08f),
                 PropertyFactory.textHaloBlur(0.25f));
             labelCount++;
         }

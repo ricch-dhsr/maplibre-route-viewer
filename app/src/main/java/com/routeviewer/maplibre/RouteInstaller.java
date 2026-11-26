@@ -34,7 +34,7 @@ public class RouteInstaller extends BroadcastReceiver {
  JSONObject j=validate(bytes.toString("UTF-8"));slot=j.getString("route");date=j.getString("date");if(j.optJSONObject("shop")==null)throw new Exception("Shop required for automatic installation");
  AtomicFile f=file(c,slot);FileOutputStream out=f.startWrite();try{out.write(bytes.toByteArray());f.finishWrite(out);}catch(Exception e){f.failWrite(out);throw e;}ok=true;
  }catch(Exception e){error=e.toString();}
- finally{try{Intent ack=new Intent("com.routeviewer.maplibre.ROUTE_INSTALLED");ack.setPackage("net.dinglisch.android.taskerm");ack.putExtra("ok",ok);ack.putExtra("route",slot);ack.putExtra("date",date);ack.putExtra("error",error);ack.putExtra("request_id",intent.getStringExtra("request_id"));c.sendBroadcast(ack);Intent changed=new Intent("com.routeviewer.maplibre.ROUTE_CHANGED").setPackage(c.getPackageName());changed.putExtra("route",slot);if(ok)c.sendBroadcast(changed);}finally{pending.finish();}}
+ finally{try{Intent ack=new Intent("com.routeviewer.maplibre.ROUTE_INSTALLED");ack.setPackage("net.dinglisch.android.taskerm");ack.putExtra("ok",Boolean.toString(ok));ack.putExtra("route",slot);ack.putExtra("date",date);ack.putExtra("error",error.isEmpty()?"none":error);ack.putExtra("request_id",intent.getStringExtra("request_id"));c.sendBroadcast(ack);Intent changed=new Intent("com.routeviewer.maplibre.ROUTE_CHANGED").setPackage(c.getPackageName());changed.putExtra("route",slot);if(ok)c.sendBroadcast(changed);}finally{pending.finish();}}
  }).start();
  }
 }

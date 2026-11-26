@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.10 "+networkState());
+        logDebug("START v1.4.11 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.10 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.11 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -375,7 +375,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.10 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.11 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -851,11 +851,22 @@ public class MainActivity extends Activity {
             List<Feature> labels=new ArrayList<>();
             java.util.Set<String> seen=new java.util.HashSet<>();
             java.util.Set<String> matchedNames=new java.util.HashSet<>();
+            int skipped=0,processed=0,multi=0;
             for(Feature road:roads){
-                if(!road.hasProperty("name")||!(road.geometry() instanceof LineString))continue;
+                try {
+                if(!road.hasProperty("name"))continue;
                 String name=road.getStringProperty("name");
                 if(name==null||name.isEmpty())continue;
-                List<Point> pts=((LineString)road.geometry()).coordinates();
+                List<LineString> lines=new ArrayList<>();
+                if(road.geometry() instanceof LineString)lines.add((LineString)road.geometry());
+                else if(road.geometry() instanceof org.maplibre.geojson.MultiLineString){
+                    multi++;
+                    for(List<Point> points:((org.maplibre.geojson.MultiLineString)road.geometry()).coordinates())lines.add(LineString.fromLngLats(points));
+                }else{skipped++;continue;}
+                processed++;
+                for(LineString segment:lines){
+                try {
+                List<Point> pts=segment.coordinates();
                 if(pts.size()<2)continue;
                 org.locationtech.jts.geom.LineString full=labelLine(gf,pts);
                 if(!full.getEnvelopeInternal().intersects(corridor.getEnvelopeInternal()))continue;
@@ -871,6 +882,9 @@ public class MainActivity extends Activity {
                     f.addStringProperty("name",name);labels.add(f);matchedNames.add(name);
                     if(labels.size()<=40)logDebug("LABEL MATCH "+name+" overlap="+Math.round(part.getLength())+"m total="+Math.round(full.getLength())+"m");
                 }
+                }catch(Exception e){skipped++;if(skipped<=5)logDebug("LABEL SEGMENT SKIP "+e);}
+                }
+                }catch(Exception e){skipped++;if(skipped<=5)logDebug("LABEL FEATURE SKIP "+e);}
             }
             GeoJsonSource source=(GeoJsonSource)style.getSource("route-street-source");
             if(source==null){
@@ -887,29 +901,30 @@ public class MainActivity extends Activity {
             }else source.setGeoJson(FeatureCollection.fromFeatures(labels));
             // Hide black labels only on features entirely within the route corridor.
             // Partial features remain black outside the route; duplicate labels are possible.
-            JSONArray polygons=new JSONArray();
+            List<Expression> inside=new ArrayList<>();
             for(int i=0;i<corridor.getNumGeometries();i++){
                 org.locationtech.jts.geom.Geometry g=corridor.getGeometryN(i);
                 if(!(g instanceof org.locationtech.jts.geom.Polygon))continue;
                 org.locationtech.jts.geom.Polygon poly=(org.locationtech.jts.geom.Polygon)g;
-                JSONArray rings=new JSONArray();
+                List<List<Point>> rings=new ArrayList<>();
                 for(int k=-1;k<poly.getNumInteriorRing();k++){
-                    JSONArray ring=new JSONArray();
-                    for(org.locationtech.jts.geom.Coordinate q:(k<0?poly.getExteriorRing():poly.getInteriorRingN(k)).getCoordinates())ring.put(new JSONArray().put(q.x/LABEL_SX).put(q.y/LABEL_SY));
-                    rings.put(ring);
+                    List<Point> ring=new ArrayList<>();
+                    for(org.locationtech.jts.geom.Coordinate q:(k<0?poly.getExteriorRing():poly.getInteriorRingN(k)).getCoordinates())ring.add(Point.fromLngLat(q.x/LABEL_SX,q.y/LABEL_SY));
+                    rings.add(ring);
                 }
-                polygons.put(rings);
+                inside.add(Expression.within(org.maplibre.geojson.Polygon.fromLngLats(rings)));
             }
-            JSONObject area=new JSONObject().put("type","MultiPolygon").put("coordinates",polygons);
-            Expression outside=Expression.Converter.convert(new JSONArray().put("!").put(new JSONArray().put("within").put(area)).toString());
+            Expression outside=inside.isEmpty()?Expression.literal(true):Expression.all(inside.stream().map(e -> Expression.not(e)).toArray(Expression[]::new));
+            int filterLayers=0;
             for(Layer l:style.getLayers())if(l instanceof SymbolLayer && "transportation_name".equals(((SymbolLayer)l).getSourceLayer())){
                 SymbolLayer sl=(SymbolLayer)l;
                 sl.setProperties(PropertyFactory.textAllowOverlap(false),PropertyFactory.textIgnorePlacement(false));
                 if(!originalRoadFilters.containsKey(sl.getId()))originalRoadFilters.put(sl.getId(),sl.getFilter());
                 Expression original=originalRoadFilters.get(sl.getId());
                 sl.setFilter(original==null?outside:Expression.all(original,outside));
+                filterLayers++;
             }
-            logDebug("LABEL SUMMARY roads="+roads.size()+" matched="+labels.size()+" names="+matchedNames.size());
+            logDebug("LABEL SUMMARY roads="+roads.size()+" matched="+labels.size()+" names="+matchedNames.size()+" processed="+processed+" multi="+multi+" skipped="+skipped+" suppressionLayers="+filterLayers+" corridorPolygons="+inside.size());
         }catch(Exception e){logDebug("LABEL MATCH ERROR "+e);}
     }
 
@@ -1194,7 +1209,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.10\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.11\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

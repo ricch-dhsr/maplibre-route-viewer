@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.8 "+networkState());
+        logDebug("START v1.4.9 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.8 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.9 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -302,7 +302,7 @@ public class MainActivity extends Activity {
             map.getUiSettings().setRotateGesturesEnabled(false);
             map.getUiSettings().setCompassEnabled(false);
             map.addOnCameraMoveListener(() -> updateCompass());
-            map.addOnCameraIdleListener(() -> updateHouseDensity());
+            map.addOnCameraIdleListener(() -> {updateHouseDensity(); refreshRouteLabels();});
             map.setMaxPitchPreference(0.0);
             readyMap=map;
             mapView.addOnDidFailLoadingMapListener(error -> logDebug("MAP LOAD FAILURE "+error));
@@ -373,7 +373,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.8 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.9 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -766,42 +766,7 @@ public class MainActivity extends Activity {
 
     private final java.util.Map<String,Expression> originalStreetSizes=new java.util.HashMap<>();
     private void addStyledRouteLine(Style style,String id,List<Feature> routeLines) {
-        Expression routeColor=null, routeHalo=null;
-        try {
-            // A road must lie within the route corridor, not merely touch it.
-            org.locationtech.jts.geom.GeometryFactory gf=new org.locationtech.jts.geom.GeometryFactory();
-            java.util.List<org.locationtech.jts.geom.Geometry> segments=new ArrayList<>();
-            final double sx=111320.0*Math.cos(Math.toRadians(42.5)), sy=111320.0;
-            for(Feature f:routeLines) if(f.geometry() instanceof LineString){
-                List<Point> pts=((LineString)f.geometry()).coordinates();
-                if(pts.size()<2)continue;
-                org.locationtech.jts.geom.Coordinate[] cs=new org.locationtech.jts.geom.Coordinate[pts.size()];
-                for(int i=0;i<pts.size();i++)cs[i]=new org.locationtech.jts.geom.Coordinate(pts.get(i).longitude()*sx,pts.get(i).latitude()*sy);
-                segments.add(gf.createLineString(cs));
-            }
-            org.locationtech.jts.geom.Geometry corridor=gf.buildGeometry(segments).buffer(12.0,4);
-            corridor=org.locationtech.jts.simplify.TopologyPreservingSimplifier.simplify(corridor,1.0);
-            JSONArray polygons=new JSONArray();
-            for(int i=0;i<corridor.getNumGeometries();i++){
-                org.locationtech.jts.geom.Geometry part=corridor.getGeometryN(i);
-                if(!(part instanceof org.locationtech.jts.geom.Polygon))continue;
-                org.locationtech.jts.geom.Polygon poly=(org.locationtech.jts.geom.Polygon)part;
-                JSONArray rings=new JSONArray();
-                for(int k=-1;k<poly.getNumInteriorRing();k++){
-                    JSONArray ring=new JSONArray();
-                    org.locationtech.jts.geom.Coordinate[] cs=(k<0?poly.getExteriorRing():poly.getInteriorRingN(k)).getCoordinates();
-                    for(org.locationtech.jts.geom.Coordinate q:cs)ring.put(new JSONArray().put(q.x/sx).put(q.y/sy));
-                    rings.put(ring);
-                }
-                polygons.put(rings);
-            }
-            JSONObject geometry=new JSONObject().put("type","MultiPolygon").put("coordinates",polygons);
-            JSONArray near=new JSONArray().put("within").put(geometry);
-            logDebug("Route label corridor polygons="+polygons.length()+" vertices="+corridor.getNumPoints());
-            routeColor=Expression.Converter.convert(new JSONArray().put("case").put(near).put("#FFFFFF").put("#000000").toString());
-            routeHalo=Expression.Converter.convert(new JSONArray().put("case").put(near).put("#30376A").put("#FFFFFF").toString());
-        }catch(Exception e){logDebug("Route label expression unavailable "+e);}
-
+        activeLabelRoute=new ArrayList<>(routeLines);
         String anchor=null;
         int labelCount=0;
         for(Layer candidate:style.getLayers()){
@@ -840,7 +805,6 @@ public class MainActivity extends Activity {
                 PropertyFactory.textHaloWidth(0.7f),
                 PropertyFactory.textLetterSpacing(0.08f),
                 PropertyFactory.textHaloBlur(0.25f));
-            if(routeColor!=null && routeHalo!=null) try {label.setProperties(PropertyFactory.textColor(routeColor),PropertyFactory.textHaloColor(routeHalo));} catch(Exception e){logDebug("Route label fallback "+e);}
             labelCount++;
         }
         LineLayer border=new LineLayer("route-line-border","route-source");
@@ -856,9 +820,77 @@ public class MainActivity extends Activity {
         if(anchor!=null){style.addLayerBelow(border,anchor);style.addLayerBelow(line,anchor);}
         else{style.addLayer(border);style.addLayer(line);}
         logDebug("ROUTE STYLE anchor="+anchor+" road labels="+labelCount);
+        refreshRouteLabels();
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> refreshRouteLabels(),1200);
+    }
+
+    private List<Feature> activeLabelRoute;
+    private static final double LABEL_SX=111320.0*Math.cos(Math.toRadians(42.5)), LABEL_SY=111320.0;
+    private org.locationtech.jts.geom.LineString labelLine(org.locationtech.jts.geom.GeometryFactory gf,List<Point> pts){
+        org.locationtech.jts.geom.Coordinate[] cs=new org.locationtech.jts.geom.Coordinate[pts.size()];
+        for(int i=0;i<pts.size();i++)cs[i]=new org.locationtech.jts.geom.Coordinate(pts.get(i).longitude()*LABEL_SX,pts.get(i).latitude()*LABEL_SY);
+        return gf.createLineString(cs);
+    }
+    private void refreshRouteLabels(){
+        if(readyStyle==null||readyMap==null||activeLabelRoute==null)return;
+        try{
+            Style style=readyStyle;
+            if(!(style.getSource("openmaptiles") instanceof VectorSource))return;
+            org.locationtech.jts.geom.GeometryFactory gf=new org.locationtech.jts.geom.GeometryFactory();
+            List<org.locationtech.jts.geom.Geometry> route=new ArrayList<>();
+            for(Feature f:activeLabelRoute)if(f.geometry() instanceof LineString){
+                List<Point> pts=((LineString)f.geometry()).coordinates();
+                if(pts.size()>1)route.add(labelLine(gf,pts));
+            }
+            if(route.isEmpty())return;
+            org.locationtech.jts.geom.Geometry corridor=gf.buildGeometry(route).buffer(12,4);
+            List<Feature> roads=((VectorSource)style.getSource("openmaptiles")).querySourceFeatures(new String[]{"transportation_name"},null);
+            List<Feature> labels=new ArrayList<>();
+            java.util.Set<String> seen=new java.util.HashSet<>();
+            java.util.Set<String> matchedNames=new java.util.HashSet<>();
+            for(Feature road:roads){
+                if(!road.hasProperty("name")||!(road.geometry() instanceof LineString))continue;
+                String name=road.getStringProperty("name");
+                if(name==null||name.isEmpty())continue;
+                List<Point> pts=((LineString)road.geometry()).coordinates();
+                if(pts.size()<2)continue;
+                org.locationtech.jts.geom.LineString full=labelLine(gf,pts);
+                if(!full.getEnvelopeInternal().intersects(corridor.getEnvelopeInternal()))continue;
+                org.locationtech.jts.geom.Geometry overlap=full.intersection(corridor);
+                for(int i=0;i<overlap.getNumGeometries();i++){
+                    org.locationtech.jts.geom.Geometry part=overlap.getGeometryN(i);
+                    if(!(part instanceof org.locationtech.jts.geom.LineString)||part.getLength()<35)continue;
+                    List<Point> coords=new ArrayList<>();
+                    for(org.locationtech.jts.geom.Coordinate q:part.getCoordinates())coords.add(Point.fromLngLat(q.x/LABEL_SX,q.y/LABEL_SY));
+                    String key=name+coords.toString();
+                    if(!seen.add(key))continue;
+                    Feature f=Feature.fromGeometry(LineString.fromLngLats(coords));
+                    f.addStringProperty("name",name);labels.add(f);matchedNames.add(name);
+                    if(labels.size()<=40)logDebug("LABEL MATCH "+name+" overlap="+Math.round(part.getLength())+"m total="+Math.round(full.getLength())+"m");
+                }
+            }
+            GeoJsonSource source=(GeoJsonSource)style.getSource("route-street-source");
+            if(source==null){
+                source=new GeoJsonSource("route-street-source",FeatureCollection.fromFeatures(labels));style.addSource(source);
+                SymbolLayer layer=new SymbolLayer("route-street-labels","route-street-source");
+                layer.withProperties(PropertyFactory.symbolPlacement("line"),PropertyFactory.textField(Expression.get("name")),
+                    PropertyFactory.textFont(new String[]{"Noto Sans Regular"}),PropertyFactory.textSize(14f),
+                    PropertyFactory.textColor("#FFFFFF"),PropertyFactory.textHaloColor("#30376A"),
+                    PropertyFactory.textHaloWidth(0.7f),PropertyFactory.textHaloBlur(0.25f),PropertyFactory.textLetterSpacing(0.08f),
+                    PropertyFactory.textAllowOverlap(true),PropertyFactory.textIgnorePlacement(true));
+                layer.setMinZoom(13f);
+                if(style.getLayer("numbered-stops")!=null)style.addLayerBelow(layer,"numbered-stops");else style.addLayer(layer);
+            }else source.setGeoJson(FeatureCollection.fromFeatures(labels));
+            // Suppress only fully contained named features; partial roads retain ordinary labels.
+            // Dedicated route labels are rendered above the regular labels.
+            logDebug("LABEL SUMMARY roads="+roads.size()+" matched="+labels.size()+" names="+matchedNames.size());
+        }catch(Exception e){logDebug("LABEL MATCH ERROR "+e);}
     }
 
     private void clearRouteLayers(Style style) {
+        activeLabelRoute=null;
+        if(style.getLayer("route-street-labels")!=null)style.removeLayer("route-street-labels");
+        if(style.getSource("route-street-source")!=null)style.removeSource("route-street-source");
         for (String id : new String[]{"numbered-stops","here-route-line","tomtom-route-line","route-line-border"}) {
             if (style.getLayer(id) != null) style.removeLayer(id);
         }
@@ -1131,7 +1163,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.8\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.9\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

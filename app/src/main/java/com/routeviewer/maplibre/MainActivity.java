@@ -555,6 +555,7 @@ public class MainActivity extends Activity {
             map.addOnCameraIdleListener(() -> {updateHouseDensity();saveView();});
             map.setMaxPitchPreference(0.0);
             readyMap=map;
+            map.addOnMapLongClickListener(point -> { beginAddDelivery(point); return true; });
             mapView.addOnDidFailLoadingMapListener(error -> logDebug("MAP LOAD FAILURE "+error));
             mapView.addOnDidFinishLoadingMapListener(() -> logDebug("MAP LOAD FINISHED"));
             mapView.addOnDidFinishRenderingMapListener(full -> logDebug("MAP RENDER full="+full));
@@ -1259,10 +1260,10 @@ public class MainActivity extends Activity {
         originalRoadFilters.clear();
         if(style.getLayer("route-street-labels")!=null)style.removeLayer("route-street-labels");
         if(style.getSource("route-street-source")!=null)style.removeSource("route-street-source");
-        for (String id : new String[]{"numbered-stops","here-route-line","tomtom-route-line","route-line-border"}) {
+        for (String id : new String[]{"numbered-stops","here-route-line","tomtom-route-line","route-line-border","unrouted-line"}) {
             if (style.getLayer(id) != null) style.removeLayer(id);
         }
-        for (String id : new String[]{"stops-source","route-source"}) {
+        for (String id : new String[]{"stops-source","route-source","unrouted-source"}) {
             if (style.getSource(id) != null) style.removeSource(id);
         }
     }
@@ -1315,6 +1316,73 @@ public class MainActivity extends Activity {
         Layer layer=readyStyle.getLayer("delivery-house-numbers");
         if(layer instanceof SymbolLayer){double z=readyMap.getCameraPosition().zoom; layer.setProperties(PropertyFactory.textAllowOverlap(z>=17),PropertyFactory.textPadding(z<16?2f:0f));}
     }
+    private void clearDraftMarker(){
+        if(readyStyle==null)return;
+        if(readyStyle.getLayer("draft-delivery")!=null)readyStyle.removeLayer("draft-delivery");
+        if(readyStyle.getSource("draft-delivery-source")!=null)readyStyle.removeSource("draft-delivery-source");
+    }
+    private void beginAddDelivery(LatLng point){
+        if(deliveryRoute==null||readyStyle==null||pendingSlot==null){Toast.makeText(this,"Select a delivery route first",Toast.LENGTH_SHORT).show();return;}
+        final String slot=pendingSlot;
+        final JSONObject original=deliveryRoute;
+        final JSONArray stops=original.optJSONArray("stops");
+        if(stops.length()>=150){Toast.makeText(this,"Route is full",Toast.LENGTH_SHORT).show();return;}
+        clearDraftMarker();
+        readyStyle.addSource(new GeoJsonSource("draft-delivery-source",Feature.fromGeometry(Point.fromLngLat(point.getLongitude(),point.getLatitude()))));
+        org.maplibre.android.style.layers.CircleLayer marker=new org.maplibre.android.style.layers.CircleLayer("draft-delivery","draft-delivery-source");
+        marker.withProperties(PropertyFactory.circleColor(0xFFFF8800),PropertyFactory.circleRadius(12f),PropertyFactory.circleStrokeColor(Color.WHITE),PropertyFactory.circleStrokeWidth(2f));
+        readyStyle.addLayer(marker);
+        LinearLayout form=new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);form.setPadding(dp(20),dp(8),dp(20),dp(8));
+        TextView coords=new TextView(this);coords.setText(String.format(Locale.US,"%.5f, %.5f",point.getLatitude(),point.getLongitude()));form.addView(coords);
+        android.widget.EditText address=new android.widget.EditText(this);address.setHint("Street address, town, MA");address.setSingleLine(false);form.addView(address);
+        TextView label=new TextView(this);label.setText("Insert delivery at:");form.addView(label);
+        Spinner position=new Spinner(this);List<String> choices=new ArrayList<>();
+        for(int i=0;i<stops.length();i++)choices.add((i+1)+" — before "+stops.optJSONObject(i).optString("address"));
+        choices.add((stops.length()+1)+" — end of route");
+        position.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,choices));
+        position.setSelection(Math.min(nextStop,stops.length()));form.addView(position);
+        android.app.AlertDialog dialog=new android.app.AlertDialog.Builder(this).setTitle("Add delivery to "+slot).setView(form).setNegativeButton("Cancel",null).setPositiveButton("Save",null).create();
+        dialog.setOnDismissListener(d->clearDraftMarker());
+        dialog.show();
+        dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            String name=address.getText().toString().trim();
+            if(name.isEmpty()){address.setError("Enter delivery address");return;}
+            try{insertDelivery(slot,original,point,name,position.getSelectedItemPosition());dialog.dismiss();}
+            catch(Exception e){Toast.makeText(this,"Cannot add delivery: "+e.getMessage(),Toast.LENGTH_LONG).show();}
+        });
+    }
+    private JSONObject draftLeg(JSONObject a,JSONObject b)throws Exception{
+        JSONArray pts=new JSONArray();
+        for(JSONObject s:new JSONObject[]{a,b})pts.put(new JSONObject().put("latitude",s.getDouble("lat")).put("longitude",s.getDouble("lon")));
+        return new JSONObject().put("unrouted",true).put("points",pts).put("summary",new JSONObject().put("lengthInMeters",0));
+    }
+    private void insertDelivery(String slot,JSONObject original,LatLng point,String address,int index)throws Exception{
+        android.util.AtomicFile file=RouteInstaller.file(this,slot);
+        JSONObject route=RouteInstaller.validate(new String(file.readFully(),StandardCharsets.UTF_8));
+        if(!route.toString().equals(original.toString()))throw new Exception("Route changed; select location again");
+        JSONArray old=route.getJSONArray("stops"),oldLegs=route.getJSONArray("legs"),stops=new JSONArray(),legs=new JSONArray();
+        JSONObject added=new JSONObject().put("address",address).put("lat",point.getLatitude()).put("lon",point.getLongitude());
+        for(int i=0;i<=old.length();i++){if(i==index)stops.put(added);if(i<old.length())stops.put(old.getJSONObject(i));}
+        JSONObject shop=route.optJSONObject("shop");
+        List<JSONObject> nodes=new ArrayList<>();if(shop!=null)nodes.add(shop);
+        for(int i=0;i<stops.length();i++)nodes.add(stops.getJSONObject(i));if(shop!=null)nodes.add(shop);
+        int inserted=index+(shop==null?0:1);
+        for(int i=0;i<nodes.size()-1;i++){
+            if(i==inserted-1||i==inserted)legs.put(draftLeg(nodes.get(i),nodes.get(i+1)));
+            else legs.put(oldLegs.getJSONObject(i<inserted-1?i:i-1));
+        }
+        route.put("stops",stops).put("legs",legs);
+        String raw=route.toString();RouteInstaller.validate(raw);
+        java.io.FileOutputStream out=file.startWrite();
+        try{out.write(raw.getBytes(StandardCharsets.UTF_8));file.finishWrite(out);}catch(Exception e){file.failWrite(out);throw e;}
+        int next=nextStop+(index<nextStop?1:0);
+        String key=slot+"_"+route.optString("date","")+"_"+Integer.toHexString(stops.toString().hashCode());
+        prefs().edit().putInt("next_"+key,next).putInt("scroll_"+key,deliveryScroll.getScrollY()).apply();
+        org.maplibre.android.camera.CameraPosition camera=readyMap.getCameraPosition();boolean rotate=rotationUnlocked;
+        showSavedRoute(slot);rotationUnlocked=rotate;readyMap.getUiSettings().setRotateGesturesEnabled(rotate);
+        readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(camera));updateCompass();saveView();
+        Toast.makeText(this,"Delivery added — route segments not calculated",Toast.LENGTH_SHORT).show();
+    }
     private void installRoute(String raw) throws Exception {
         JSONObject route=RouteInstaller.validate(raw);
         String slot=route.getString("route");
@@ -1338,7 +1406,7 @@ public class MainActivity extends Activity {
             demoRouteShown=false;
             if(readyStyle==null || readyMap==null) return;
             JSONArray stops=route.getJSONArray("stops"), legs=route.getJSONArray("legs");
-            List<Feature> markers=new ArrayList<>(), lines=new ArrayList<>();
+            List<Feature> markers=new ArrayList<>(), lines=new ArrayList<>(), unrouted=new ArrayList<>();
             LatLngBounds.Builder bounds=new LatLngBounds.Builder();
             clearRouteLayers(readyStyle);
             for(int i=0;i<stops.length();i++){
@@ -1382,11 +1450,12 @@ public class MainActivity extends Activity {
                 if(coords.size()>=2){
                     Feature f=Feature.fromGeometry(LineString.fromLngLats(coords));
                     f.addNumberProperty("leg",i+1);
-                    lines.add(f);
+                    if(legs.getJSONObject(i).optBoolean("unrouted"))unrouted.add(f);else lines.add(f);
                 }
             }
             readyStyle.addSource(new GeoJsonSource("route-source",FeatureCollection.fromFeatures(lines)));
             addStyledRouteLine(readyStyle,"tomtom-route-line",lines);
+            if(!unrouted.isEmpty()){readyStyle.addSource(new GeoJsonSource("unrouted-source",FeatureCollection.fromFeatures(unrouted)));LineLayer dashed=new LineLayer("unrouted-line","unrouted-source");dashed.withProperties(PropertyFactory.lineColor(0xFFFF8800),PropertyFactory.lineWidth(4f),PropertyFactory.lineDasharray(new Float[]{2f,2f}));readyStyle.addLayer(dashed);}
             readyStyle.addSource(new GeoJsonSource("stops-source",FeatureCollection.fromFeatures(markers)));
             SymbolLayer layer=new SymbolLayer("numbered-stops","stops-source");
             layer.withProperties(PropertyFactory.iconImage(Expression.get("icon")),PropertyFactory.iconAllowOverlap(true),PropertyFactory.iconIgnorePlacement(true),PropertyFactory.iconSize(markerPercent/100f));
@@ -1404,7 +1473,7 @@ public class MainActivity extends Activity {
             status.setText(RouteInstaller.label(this,slot)+" • "+stops.length()+" stops");
             status.setGravity(Gravity.LEFT);
             long minutes=Math.round(seconds/60.0);
-            mileage.setText(String.format(Locale.US,"%.1f mi",meters/1609.344)+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
+            mileage.setText((unrouted.isEmpty()?String.format(Locale.US,"%.1f mi",meters/1609.344):"Partial: "+String.format(Locale.US,"%.1f mi",meters/1609.344))+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
             populateDelivery(route,slot);
             saveView();
             logDebug("ROUTE "+slot+" stops="+stops.length()+" markers="+markers.size()+" points="+points);

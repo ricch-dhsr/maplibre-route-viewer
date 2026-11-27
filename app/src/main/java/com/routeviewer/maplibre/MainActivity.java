@@ -142,7 +142,7 @@ public class MainActivity extends Activity {
                 case android.view.MotionEvent.ACTION_UP:
                     if(!moved && view==deliveryGrab)panelCollapsed=!panelCollapsed;
                     prefs().edit().putInt("panel_dp",panelDp).putBoolean("panel_collapsed",panelCollapsed).apply();layoutDeliveryPanel();return true;
-                case android.view.MotionEvent.ACTION_CANCEL:return true;
+                case android.view.MotionEvent.ACTION_CANCEL:navHandler.removeCallbacks(hold);return true;
                 }return true;
             }
         });
@@ -228,21 +228,32 @@ public class MainActivity extends Activity {
             if(i!=null)try{i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(i);showingGoogle=!showingGoogle;}catch(Exception e){logDebug("FOB toggle "+e);}
         });
     }
+    private void cancelNavigation(){
+        navHandler.removeCallbacksAndMessages(null);navActive=false;mapsPrepared=false;hideFloating();
+        String result=NavigationStopListener.stopNavigation();logDebug("NAV STOP "+result);
+        Toast.makeText(this,result,Toast.LENGTH_LONG).show();
+    }
     private void addFloating(String key,String value,Runnable click){
         android.view.WindowManager wm=(android.view.WindowManager)getSystemService(WINDOW_SERVICE);
         TextView t=new TextView(this);t.setText(value);t.setTextColor(0xFFFF0000);t.setTypeface(null,android.graphics.Typeface.BOLD);
         t.setTextSize(prefs().getInt("float_size_"+key,20));t.setPadding(dp(8),dp(8),dp(8),dp(8));t.setMaxWidth(getResources().getDisplayMetrics().widthPixels-dp(16));
         android.view.WindowManager.LayoutParams p=new android.view.WindowManager.LayoutParams(-2,-2,android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,android.graphics.PixelFormat.TRANSLUCENT);
-        p.gravity=Gravity.TOP|Gravity.LEFT;p.x=prefs().getInt("float_x_"+key,dp(12));p.y=prefs().getInt("float_y_"+key,dp(key.equals("list")?100:160));
+        t.measure(android.view.View.MeasureSpec.makeMeasureSpec(t.getMaxWidth(),android.view.View.MeasureSpec.AT_MOST),android.view.View.MeasureSpec.makeMeasureSpec(0,android.view.View.MeasureSpec.UNSPECIFIED));
+        int width=getResources().getDisplayMetrics().widthPixels,height=getResources().getDisplayMetrics().heightPixels;
+        int defaultX=Math.max(0,width-t.getMeasuredWidth()- (key.equals("list")?Math.round(width*0.055f):0));
+        p.gravity=Gravity.TOP|Gravity.LEFT;p.x=prefs().getInt("float_x_"+key,defaultX);p.y=prefs().getInt("float_y_"+key,key.equals("list")?Math.round(height*0.19f):dp(4));
         t.setOnTouchListener(new android.view.View.OnTouchListener(){
-            float x,y;int ox,oy;boolean moved;
+            float x,y;int ox,oy;boolean moved,held;
+            final Runnable hold=()->{if(!moved){held=true;cancelNavigation();}};
             public boolean onTouch(android.view.View v,android.view.MotionEvent e){
                 switch(e.getActionMasked()){
-                    case android.view.MotionEvent.ACTION_DOWN:x=e.getRawX();y=e.getRawY();ox=p.x;oy=p.y;moved=false;return true;
+                    case android.view.MotionEvent.ACTION_DOWN:x=e.getRawX();y=e.getRawY();ox=p.x;oy=p.y;moved=false;held=false;navHandler.postDelayed(hold,android.view.ViewConfiguration.getLongPressTimeout());return true;
                     case android.view.MotionEvent.ACTION_MOVE:
-                        if(Math.abs(e.getRawX()-x)+Math.abs(e.getRawY()-y)>dp(8))moved=true;
+                        if(held)return true;
+                        if(Math.abs(e.getRawX()-x)+Math.abs(e.getRawY()-y)>dp(8)){moved=true;navHandler.removeCallbacks(hold);}
                         if(moved){p.x=Math.max(0,Math.min(getResources().getDisplayMetrics().widthPixels-t.getWidth(),ox+(int)(e.getRawX()-x)));p.y=Math.max(0,Math.min(getResources().getDisplayMetrics().heightPixels-t.getHeight(),oy+(int)(e.getRawY()-y)));wm.updateViewLayout(t,p);}return true;
                     case android.view.MotionEvent.ACTION_UP:
+                        navHandler.removeCallbacks(hold);if(held)return true;
                         if(moved)prefs().edit().putInt("float_x_"+key,p.x).putInt("float_y_"+key,p.y).apply();else click.run();return true;
                     case android.view.MotionEvent.ACTION_CANCEL:return true;
                 }return false;
@@ -264,6 +275,7 @@ public class MainActivity extends Activity {
             size.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(android.widget.SeekBar b,int p,boolean u){prefs().edit().putInt("float_size_"+key,p+12).apply();label.setText(key+" text size: "+(p+12));}public void onStartTrackingTouch(android.widget.SeekBar b){}public void onStopTrackingTouch(android.widget.SeekBar b){}});
         }
         Button permission=new Button(this);permission.setText("Allow display over other apps");panel.addView(permission);permission.setOnClickListener(v->startActivity(new android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,android.net.Uri.parse("package:"+getPackageName()))));
+        Button access=new Button(this);access.setText("Allow notification access (stop navigation)");panel.addView(access);access.setOnClickListener(v->startActivity(new android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         android.widget.ScrollView scroll=new android.widget.ScrollView(this);scroll.addView(panel);
         new android.app.AlertDialog.Builder(this).setTitle("Navigation settings").setView(scroll).setPositiveButton("Done",null).show();
     }

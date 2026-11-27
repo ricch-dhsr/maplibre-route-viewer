@@ -61,6 +61,140 @@ import org.maplibre.geojson.Point;
 /** v0.9: adds optional house-number labels to existing offline vector tiles. */
 public class MainActivity extends Activity {
     private MapView mapView;
+    private FrameLayout rootFrame;
+    private LinearLayout deliveryPanel, deliveryRows;
+    private android.widget.ScrollView deliveryScroll;
+    private TextView deliveryGrab;
+    private JSONObject deliveryRoute;
+    private String deliveryKey="";
+    private int nextStop=0, rowDp=56, fontSp=18, panelDp=0;
+    private boolean panelCollapsed=false, restoringView=false;
+    private int dp(float n){return Math.round(n*getResources().getDisplayMetrics().density);}
+    private android.content.SharedPreferences prefs(){return getPreferences(MODE_PRIVATE);}
+    private void saveView(){
+        if(readyMap==null || restoringView || readyStyle==null)return;
+        org.maplibre.android.camera.CameraPosition p=readyMap.getCameraPosition();
+        if(p.target==null)return;
+        prefs().edit().putString("view_slot",pendingSlot==null?"":pendingSlot)
+            .putString("view_lat",Double.toString(p.target.getLatitude()))
+            .putString("view_lon",Double.toString(p.target.getLongitude()))
+            .putString("view_zoom",Double.toString(p.zoom))
+            .putString("view_bearing",Double.toString(p.bearing))
+            .putBoolean("view_rotate",rotationUnlocked).apply();
+    }
+    private void restoreView(){
+        try{
+            if(!prefs().contains("view_lat"))return;
+            rotationUnlocked=prefs().getBoolean("view_rotate",false);
+            readyMap.getUiSettings().setRotateGesturesEnabled(rotationUnlocked);
+            readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(
+                new org.maplibre.android.camera.CameraPosition.Builder()
+                .target(new LatLng(Double.parseDouble(prefs().getString("view_lat","40.6")),Double.parseDouble(prefs().getString("view_lon","-67.5"))))
+                .zoom(Double.parseDouble(prefs().getString("view_zoom","7")))
+                .bearing(Double.parseDouble(prefs().getString("view_bearing","0"))).tilt(0).build()));
+            updateCompass();
+        }catch(Exception e){logDebug("Restore view "+e);}
+    }
+    private void createDeliveryPanel(FrameLayout frame){
+        rootFrame=frame;
+        rowDp=prefs().getInt("row_dp",56);fontSp=prefs().getInt("font_sp",18);
+        panelDp=prefs().getInt("panel_dp",0);panelCollapsed=prefs().getBoolean("panel_collapsed",false);
+        deliveryPanel=new LinearLayout(this);deliveryPanel.setOrientation(LinearLayout.VERTICAL);
+        deliveryPanel.setBackgroundColor(Color.WHITE);
+        deliveryScroll=new android.widget.ScrollView(this);
+        deliveryRows=new LinearLayout(this);deliveryRows.setOrientation(LinearLayout.VERTICAL);
+        deliveryScroll.addView(deliveryRows);deliveryPanel.addView(deliveryScroll,new LinearLayout.LayoutParams(-1,0,1));
+        FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(dp(200),-1,Gravity.RIGHT|Gravity.TOP);
+        lp.topMargin=dp(100);lp.bottomMargin=dp(58);
+        frame.addView(deliveryPanel,lp);
+        deliveryGrab=new TextView(this);deliveryGrab.setText("⋮");deliveryGrab.setTextSize(28);deliveryGrab.setGravity(Gravity.CENTER);
+        deliveryGrab.setTextColor(Color.WHITE);deliveryGrab.setBackgroundColor(0xFF34434F);
+        FrameLayout.LayoutParams gp=new FrameLayout.LayoutParams(dp(36),dp(100),Gravity.RIGHT|Gravity.CENTER_VERTICAL);
+        frame.addView(deliveryGrab,gp);wireGrab(deliveryGrab);
+        deliveryPanel.setVisibility(android.view.View.GONE);deliveryGrab.setVisibility(android.view.View.GONE);
+        frame.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,orr,ob)->{if(r-l!=orr-ol || b-t!=ob-ot)layoutDeliveryPanel();});
+    }
+    private void layoutDeliveryPanel(){
+        if(rootFrame==null || deliveryPanel==null)return;
+        int w=rootFrame.getWidth();if(w<=0)return;
+        int width=Math.min(Math.max(dp(140),panelDp==0?(int)(w*.30):dp(panelDp)),Math.max(dp(140),w-dp(72)));
+        FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)deliveryPanel.getLayoutParams();lp.width=width;deliveryPanel.setLayoutParams(lp);
+        FrameLayout.LayoutParams gp=(FrameLayout.LayoutParams)deliveryGrab.getLayoutParams();gp.rightMargin=panelCollapsed?0:width;deliveryGrab.setLayoutParams(gp);
+        deliveryPanel.setVisibility(deliveryRoute!=null&&!panelCollapsed?android.view.View.VISIBLE:android.view.View.GONE);
+        deliveryGrab.setVisibility(deliveryRoute!=null?android.view.View.VISIBLE:android.view.View.GONE);
+    }
+    private void wireGrab(android.view.View v){
+        v.setOnTouchListener(new android.view.View.OnTouchListener(){
+            float x,y;int start;boolean moved,wasCollapsed;
+            public boolean onTouch(android.view.View view,android.view.MotionEvent e){
+                switch(e.getActionMasked()){
+                case android.view.MotionEvent.ACTION_DOWN:
+                    x=e.getRawX();y=e.getRawY();start=deliveryPanel.getWidth();moved=false;wasCollapsed=panelCollapsed;return true;
+                case android.view.MotionEvent.ACTION_MOVE:
+                    float delta=e.getRawX()-x;
+                    if(!moved && Math.abs(e.getRawY()-y)>dp(12) && Math.abs(delta)<dp(10))return false;
+                    if(Math.abs(delta)>dp(8))moved=true;
+                    if(moved){int width=(wasCollapsed?dp(36):start)-(int)delta;
+                        panelCollapsed=width<dp(100);
+                        if(!panelCollapsed)panelDp=Math.round(Math.max(dp(140),width)/getResources().getDisplayMetrics().density);
+                        layoutDeliveryPanel();}
+                    return true;
+                case android.view.MotionEvent.ACTION_UP:
+                    if(!moved && view==deliveryGrab)panelCollapsed=!panelCollapsed;
+                    prefs().edit().putInt("panel_dp",panelDp).putBoolean("panel_collapsed",panelCollapsed).apply();layoutDeliveryPanel();return true;
+                case android.view.MotionEvent.ACTION_CANCEL:return true;
+                }return true;
+            }
+        });
+    }
+    private void populateDelivery(JSONObject route,String slot){
+        String key=slot+"_"+route.optString("date","")+"_"+Integer.toHexString(route.optJSONArray("stops").toString().hashCode());
+        boolean same=key.equals(deliveryKey);
+        deliveryRoute=route;deliveryKey=key;
+        nextStop=prefs().getInt("next_"+key,0);
+        renderDeliveryRows(same?deliveryScroll.getScrollY():prefs().getInt("scroll_"+key,0));
+        layoutDeliveryPanel();
+    }
+    private void renderDeliveryRows(int scroll){
+        if(deliveryRoute==null)return;
+        JSONArray stops=deliveryRoute.optJSONArray("stops");
+        deliveryRows.removeAllViews();
+        for(int i=0;i<stops.length();i++){
+            final int index=i;JSONObject stop=stops.optJSONObject(i);
+            LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(0xFF34434F);number.setGravity(Gravity.CENTER);
+            row.addView(number,new LinearLayout.LayoutParams(dp(36),-1));wireGrab(number);
+            TextView address=new TextView(this);address.setText(stop.optString("address"));address.setTextColor(Color.BLACK);
+            address.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);address.setTextSize(fontSp);
+            address.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);address.setPadding(dp(6),dp(6),dp(8),dp(6));address.setMinHeight(dp(rowDp));
+            address.setBackgroundColor(i==nextStop?0xFFD9EDCE:Color.WHITE);
+            row.addView(address,new LinearLayout.LayoutParams(0,-2,1));
+            address.setOnClickListener(v->selectDelivery(index,false));
+            address.setOnLongClickListener(v->{selectDelivery(index,true);return true;});
+            deliveryRows.addView(row,new LinearLayout.LayoutParams(-1,-2));
+            android.view.View line=new android.view.View(this);line.setBackgroundColor(0xFFCCCCCC);deliveryRows.addView(line,new LinearLayout.LayoutParams(-1,dp(1)));
+        }
+        android.view.View end=new android.view.View(this);end.setBackgroundColor(0xFFC52C2C);deliveryRows.addView(end,new LinearLayout.LayoutParams(-1,dp(7)));
+        android.view.View space=new android.view.View(this);deliveryRows.addView(space,new LinearLayout.LayoutParams(-1,Math.max(dp(100),deliveryScroll.getHeight())));
+        deliveryScroll.post(()->{space.getLayoutParams().height=Math.max(dp(100),deliveryScroll.getHeight());space.requestLayout();deliveryScroll.post(()->deliveryScroll.scrollTo(0,scroll));});
+    }
+    private void selectDelivery(int index,boolean longPress){
+        try{
+            JSONArray stops=deliveryRoute.getJSONArray("stops");JSONObject s=stops.getJSONObject(index);
+            android.content.Intent intent=new android.content.Intent("com.routeviewer.maplibre."+(longPress?"LIST_LONG_PRESS":"LIST_TAP"));
+            intent.setPackage("net.dinglisch.android.taskerm");
+            intent.putExtra("address",s.getString("address"));intent.putExtra("lat",String.valueOf(s.getDouble("lat")));intent.putExtra("lon",String.valueOf(s.getDouble("lon")));
+            intent.putExtra("index",String.valueOf(index+1));intent.putExtra("route",deliveryRoute.getString("route"));intent.putExtra("date",deliveryRoute.optString("date",""));intent.putExtra("total",String.valueOf(stops.length()));
+            if(!longPress){
+                nextStop=index+1;int y=deliveryRows.getChildAt(index*2).getTop();
+                prefs().edit().putInt("next_"+deliveryKey,nextStop).putInt("scroll_"+deliveryKey,y).apply();
+                for(int i=0;i<stops.length();i++)((LinearLayout)deliveryRows.getChildAt(i*2)).getChildAt(1).setBackgroundColor(i==nextStop?0xFFD9EDCE:Color.WHITE);
+                deliveryScroll.scrollTo(0,y);
+            }
+            sendBroadcast(intent);logDebug("LIST "+(longPress?"long":"tap")+" "+(index+1));
+        }catch(Exception e){logDebug("LIST error "+e);Toast.makeText(this,"Selection failed: "+e.getMessage(),Toast.LENGTH_LONG).show();}
+    }
+
     private TextView status, offlineStatus, mileage;
     private Button compass;
     private boolean rotationUnlocked=false;
@@ -70,7 +204,7 @@ public class MainActivity extends Activity {
     private int activeRegionIndex = -1;
     private OfflineRegion offlineRegion;
     private boolean downloading;
-    private int markerPercent=100, retryCount=0;
+    private int markerPercent=75, retryCount=0;
     private long retryProgress=-1;
     private boolean retryPending=false;
     private final android.os.Handler retryHandler=new android.os.Handler(android.os.Looper.getMainLooper());
@@ -127,11 +261,11 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        markerPercent=Math.max(20,Math.min(200,getPreferences(MODE_PRIVATE).getInt("marker_percent",100)));
+        markerPercent=Math.max(20,Math.min(200,getPreferences(MODE_PRIVATE).getInt("marker_percent",75)));
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.16 "+networkState());
+        logDebug("START v1.4.17 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -156,7 +290,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.16 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.17 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -295,6 +429,11 @@ public class MainActivity extends Activity {
         frame.addView(floating,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.RIGHT));
         floating.setVisibility(android.view.View.GONE);
         menuButton.setTag(floating);
+        createDeliveryPanel(frame);
+        controls.bringToFront();floating.bringToFront();
+        restoringView=prefs().contains("view_lat");
+        String savedSlot=prefs().getString("view_slot","");
+        if(java.util.Arrays.asList(routeSlots).contains(savedSlot))pendingSlot=savedSlot;
         setContentView(frame);
         downloadButton.setOnClickListener(v -> startOfflineDownload());
 
@@ -309,7 +448,7 @@ public class MainActivity extends Activity {
             map.getUiSettings().setRotateGesturesEnabled(false);
             map.getUiSettings().setCompassEnabled(false);
             map.addOnCameraMoveListener(() -> updateCompass());
-            map.addOnCameraIdleListener(() -> updateHouseDensity());
+            map.addOnCameraIdleListener(() -> {updateHouseDensity();saveView();});
             map.setMaxPitchPreference(0.0);
             readyMap=map;
             mapView.addOnDidFailLoadingMapListener(error -> logDebug("MAP LOAD FAILURE "+error));
@@ -382,12 +521,13 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.16 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.17 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
                 if(reloadCamera!=null) map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(reloadCamera));
                 reloadCamera=null; reloading=false;
+                if(restoringView){restoreView();restoringView=false;hideControls();saveView();}
                 mapView.postDelayed(() -> snapshotDebug("style + 5 seconds"),5000);
             });
     }
@@ -564,7 +704,11 @@ public class MainActivity extends Activity {
         TextView label=new TextView(this); label.setText("Marker size: "+markerPercent+"%");
         panel.addView(label);
         android.widget.SeekBar slider=new android.widget.SeekBar(this);
-        slider.setMax(36); slider.setProgress((markerPercent-20)/5); panel.addView(slider);
+        slider.setMax(36); slider.setProgress((markerPercent-20)/5);
+        LinearLayout sizing=new LinearLayout(this);
+        Button minus=new Button(this);minus.setText("−");minus.setOnClickListener(v->slider.setProgress(slider.getProgress()-1));
+        Button plus=new Button(this);plus.setText("+");plus.setOnClickListener(v->slider.setProgress(slider.getProgress()+1));
+        sizing.addView(minus,new LinearLayout.LayoutParams(dp(48),-2));sizing.addView(slider,new LinearLayout.LayoutParams(0,-2,1));sizing.addView(plus,new LinearLayout.LayoutParams(dp(48),-2));panel.addView(sizing);
         slider.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener(){
             public void onProgressChanged(android.widget.SeekBar bar,int progress,boolean user){
                 int percent=20+progress*5; label.setText("Marker size: "+percent+"%"); applyMarkerSize(percent);
@@ -572,8 +716,24 @@ public class MainActivity extends Activity {
             public void onStartTrackingTouch(android.widget.SeekBar bar){}
             public void onStopTrackingTouch(android.widget.SeekBar bar){}
         });
-        Button reset=new Button(this); reset.setText("Reset to 100%"); panel.addView(reset);
-        reset.setOnClickListener(v->slider.setProgress(16));
+        Button reset=new Button(this); reset.setText("Reset to 75%"); panel.addView(reset);
+        reset.setOnClickListener(v->slider.setProgress(11));
+        for(boolean font:new boolean[]{true,false}){
+            TextView title=new TextView(this);title.setText(font?"Address font: "+fontSp+" sp":"Row height: "+rowDp+" dp");panel.addView(title);
+            android.widget.SeekBar bar=new android.widget.SeekBar(this);bar.setMax(font?18:64);bar.setProgress(font?fontSp-12:rowDp-36);panel.addView(bar);
+            bar.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener(){
+                public void onProgressChanged(android.widget.SeekBar b,int p,boolean user){
+                    if(font)fontSp=12+p;else rowDp=36+p;
+                    title.setText(font?"Address font: "+fontSp+" sp":"Row height: "+rowDp+" dp");
+                    prefs().edit().putInt("font_sp",fontSp).putInt("row_dp",rowDp).apply();
+                    renderDeliveryRows(deliveryScroll.getScrollY());
+                }
+                public void onStartTrackingTouch(android.widget.SeekBar b){}
+                public void onStopTrackingTouch(android.widget.SeekBar b){}
+            });
+        }
+        Button resetList=new Button(this);resetList.setText("Reset list position");panel.addView(resetList);
+        resetList.setOnClickListener(v->{nextStop=0;prefs().edit().putInt("next_"+deliveryKey,0).putInt("scroll_"+deliveryKey,0).apply();renderDeliveryRows(0);});
         new android.app.AlertDialog.Builder(this).setTitle("Display settings").setView(panel).setPositiveButton("Done",null).show();
     }
 
@@ -1140,6 +1300,8 @@ public class MainActivity extends Activity {
             status.setGravity(Gravity.LEFT);
             long minutes=Math.round(seconds/60.0);
             mileage.setText(String.format(Locale.US,"%.1f mi",meters/1609.344)+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
+            populateDelivery(route,slot);
+            saveView();
             logDebug("ROUTE "+slot+" stops="+stops.length()+" markers="+markers.size()+" points="+points);
             hideControls();
             mapView.postDelayed(() -> snapshotDebug("route + 5 seconds"),5000);
@@ -1266,7 +1428,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.16\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.17\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");
@@ -1387,7 +1549,7 @@ public class MainActivity extends Activity {
  };
  private void refreshSlotLabels(){for(String s:routeSlots){Button b=slotButtons.get(s);if(b!=null)b.setText(RouteInstaller.label(this,s));}}
     @Override protected void onResume() { super.onResume(); mapView.onResume(); refreshSlotLabels(); }
-    @Override protected void onPause() { mapView.onPause(); super.onPause(); }
+    @Override protected void onPause() { saveView();if(deliveryRoute!=null&&!panelCollapsed)prefs().edit().putInt("scroll_"+deliveryKey,deliveryScroll.getScrollY()).apply(); mapView.onPause(); super.onPause(); }
     @Override protected void onStop() { mapView.onStop(); super.onStop(); }
     @Override protected void onDestroy() { retryHandler.removeCallbacksAndMessages(null); if(downloading && offlineRegion!=null){activeRegionIndex=-1;offlineRegion.setDownloadState(OfflineRegion.STATE_INACTIVE);} unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
     @Override public void onLowMemory() { super.onLowMemory(); mapView.onLowMemory(); }

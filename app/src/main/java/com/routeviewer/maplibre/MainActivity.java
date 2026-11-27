@@ -142,7 +142,7 @@ public class MainActivity extends Activity {
                 case android.view.MotionEvent.ACTION_UP:
                     if(!moved && view==deliveryGrab)panelCollapsed=!panelCollapsed;
                     prefs().edit().putInt("panel_dp",panelDp).putBoolean("panel_collapsed",panelCollapsed).apply();layoutDeliveryPanel();return true;
-                case android.view.MotionEvent.ACTION_CANCEL:navHandler.removeCallbacks(hold);return true;
+                case android.view.MotionEvent.ACTION_CANCEL:return true;
                 }return true;
             }
         });
@@ -255,7 +255,7 @@ public class MainActivity extends Activity {
                     case android.view.MotionEvent.ACTION_UP:
                         navHandler.removeCallbacks(hold);if(held)return true;
                         if(moved)prefs().edit().putInt("float_x_"+key,p.x).putInt("float_y_"+key,p.y).apply();else click.run();return true;
-                    case android.view.MotionEvent.ACTION_CANCEL:return true;
+                    case android.view.MotionEvent.ACTION_CANCEL:navHandler.removeCallbacks(hold);return true;
                 }return false;
             }
         });

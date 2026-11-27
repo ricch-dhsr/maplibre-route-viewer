@@ -169,7 +169,7 @@ public class MainActivity extends Activity {
         for(int i=0;i<stops.length();i++){
             final int index=i;JSONObject stop=stops.optJSONObject(i);
             LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);
-            TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(0xFF34434F);number.setGravity(Gravity.CENTER);
+            TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(stop.optBoolean("added")?0xFFE88A19:0xFF34434F);number.setGravity(Gravity.CENTER);
             row.addView(number,new LinearLayout.LayoutParams(dp(36),-1));wireGrab(number);
             TextView address=new TextView(this);address.setText(displayAddress(stop.optString("address")));address.setTextColor(Color.BLACK);
             address.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);address.setTextSize(fontSp);
@@ -1321,56 +1321,99 @@ public class MainActivity extends Activity {
         if(readyStyle.getLayer("draft-delivery")!=null)readyStyle.removeLayer("draft-delivery");
         if(readyStyle.getSource("draft-delivery-source")!=null)readyStyle.removeSource("draft-delivery-source");
     }
+    private android.app.AlertDialog draftDialog;
+    private Button draftResume;
+    private LatLng draftPoint;
+    private JSONObject draftOriginal;
+    private String draftSlot, draftAddress="";
+    private int draftIndex;
+    private double[] nearestLeg(JSONArray legs, double lat,double lon) throws Exception {
+        double best=Double.POSITIVE_INFINITY,second=best,blat=lat,blon=lon;int leg=-1;
+        double scale=Math.cos(Math.toRadians(lat));
+        for(int i=0;i<legs.length();i++){
+            JSONObject l=legs.getJSONObject(i);if(l.optBoolean("unrouted"))continue;
+            JSONArray pts=l.getJSONArray("points");double local=Double.POSITIVE_INFINITY,la=lat,lo=lon;
+            for(int j=1;j<pts.length();j++){
+                JSONObject p=pts.getJSONObject(j-1),q=pts.getJSONObject(j);
+                double x=(p.getDouble("longitude")-lon)*scale,y=p.getDouble("latitude")-lat;
+                double dx=(q.getDouble("longitude")-p.getDouble("longitude"))*scale,dy=q.getDouble("latitude")-p.getDouble("latitude");
+                double d=dx*dx+dy*dy,t=d==0?0:Math.max(0,Math.min(1,-(x*dx+y*dy)/d));
+                double dist=Math.hypot(x+t*dx,y+t*dy)*111195;
+                if(dist<local){local=dist;la=p.getDouble("latitude")+t*dy;lo=p.getDouble("longitude")+t*(q.getDouble("longitude")-p.getDouble("longitude"));}
+            }
+            if(local<best){second=best;best=local;leg=i;blat=la;blon=lo;}else if(local<second)second=local;
+        }
+        return new double[]{leg,best,blat,blon,second};
+    }
+    private JSONArray originalLegs(JSONObject route)throws Exception{
+        JSONArray legs=route.optJSONArray("original_legs");return legs==null?route.getJSONArray("legs"):legs;
+    }
+    private int suggestedIndex(JSONObject route,LatLng point)throws Exception{
+        double[] hit=nearestLeg(originalLegs(route),point.getLatitude(),point.getLongitude());
+        JSONArray stops=route.getJSONArray("stops");
+        int after=(int)hit[0]+(route.optJSONObject("shop")==null?1:0);
+        if(hit[0]<0)return 0;
+        int n=0,i=0;
+        while(i<stops.length()&&n<after){if(!stops.getJSONObject(i).optBoolean("added"))n++;i++;}
+        return i;
+    }
+    private void cancelDraft(){
+        clearDraftMarker();draftPoint=null;draftOriginal=null;
+        if(draftResume!=null){rootFrame.removeView(draftResume);draftResume=null;}
+    }
     private void beginAddDelivery(LatLng point){
-        if(deliveryRoute==null||readyStyle==null||pendingSlot==null){Toast.makeText(this,"Select a delivery route first",Toast.LENGTH_SHORT).show();return;}
-        final String slot=pendingSlot;
-        final JSONObject original=deliveryRoute;
-        final JSONArray stops=original.optJSONArray("stops");
-        if(stops.length()>=150){Toast.makeText(this,"Route is full",Toast.LENGTH_SHORT).show();return;}
-        clearDraftMarker();
-        readyStyle.addSource(new GeoJsonSource("draft-delivery-source",Feature.fromGeometry(Point.fromLngLat(point.getLongitude(),point.getLatitude()))));
-        org.maplibre.android.style.layers.CircleLayer marker=new org.maplibre.android.style.layers.CircleLayer("draft-delivery","draft-delivery-source");
-        marker.withProperties(PropertyFactory.circleColor(0xFFFF8800),PropertyFactory.circleRadius(12f),PropertyFactory.circleStrokeColor(Color.WHITE),PropertyFactory.circleStrokeWidth(2f));
-        readyStyle.addLayer(marker);
+        if(deliveryRoute==null||readyStyle==null||pendingSlot==null)return;
+        if(deliveryRoute.optJSONArray("stops").length()>=150)return;
+        try{
+            if(draftOriginal!=deliveryRoute){cancelDraft();draftOriginal=deliveryRoute;draftSlot=pendingSlot;draftAddress="";}
+            draftPoint=point;draftIndex=suggestedIndex(draftOriginal,point);
+            clearDraftMarker();
+            readyStyle.addSource(new GeoJsonSource("draft-delivery-source",Feature.fromGeometry(Point.fromLngLat(point.getLongitude(),point.getLatitude()))));
+            org.maplibre.android.style.layers.CircleLayer marker=new org.maplibre.android.style.layers.CircleLayer("draft-delivery","draft-delivery-source");
+            marker.withProperties(PropertyFactory.circleColor(0xFFFF8800),PropertyFactory.circleRadius(12f),PropertyFactory.circleStrokeColor(Color.WHITE),PropertyFactory.circleStrokeWidth(2f));readyStyle.addLayer(marker);
+            if(draftResume==null)openDraft();
+        }catch(Exception e){Toast.makeText(this,e.toString(),Toast.LENGTH_LONG).show();}
+    }
+    private void openDraft(){
+        if(draftOriginal==null||draftOriginal!=deliveryRoute){cancelDraft();return;}
+        if(draftResume!=null){rootFrame.removeView(draftResume);draftResume=null;}
+        JSONArray stops=draftOriginal.optJSONArray("stops");
         LinearLayout form=new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);form.setPadding(dp(20),dp(8),dp(20),dp(8));
-        TextView coords=new TextView(this);coords.setText(String.format(Locale.US,"%.5f, %.5f",point.getLatitude(),point.getLongitude()));form.addView(coords);
-        android.widget.EditText address=new android.widget.EditText(this);address.setHint("Street address, town, MA");address.setSingleLine(false);form.addView(address);
-        TextView label=new TextView(this);label.setText("Insert delivery at:");form.addView(label);
-        Spinner position=new Spinner(this);List<String> choices=new ArrayList<>();
-        for(int i=0;i<stops.length();i++)choices.add((i+1)+" — before "+stops.optJSONObject(i).optString("address"));
-        choices.add((stops.length()+1)+" — end of route");
-        position.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,choices));
-        position.setSelection(Math.min(nextStop,stops.length()));form.addView(position);
-        android.app.AlertDialog dialog=new android.app.AlertDialog.Builder(this).setTitle("Add delivery to "+slot).setView(form).setNegativeButton("Cancel",null).setPositiveButton("Save",null).create();
-        dialog.setOnDismissListener(d->clearDraftMarker());
-        dialog.show();
-        dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
-            String name=address.getText().toString().trim();
-            if(name.isEmpty()){address.setError("Enter delivery address");return;}
-            try{insertDelivery(slot,original,point,name,position.getSelectedItemPosition());dialog.dismiss();}
+        TextView coords=new TextView(this);coords.setText(String.format(Locale.US,"%.5f, %.5f",draftPoint.getLatitude(),draftPoint.getLongitude()));form.addView(coords);
+        android.widget.EditText address=new android.widget.EditText(this);address.setHint("Street address, town, MA");address.setText(draftAddress);form.addView(address);
+        TextView label=new TextView(this);label.setText("Add after (verify suggested position):");form.addView(label);
+        Spinner position=new Spinner(this);List<String> choices=new ArrayList<>();choices.add("0 — Before first delivery");
+        for(int i=0;i<stops.length();i++)choices.add((i+1)+" — "+stops.optJSONObject(i).optString("address"));
+        position.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,choices));position.setSelection(draftIndex);form.addView(position);
+        draftDialog=new android.app.AlertDialog.Builder(this).setTitle("Add delivery to "+draftSlot).setView(form).setNegativeButton("Cancel",(d,w)->cancelDraft()).setNeutralButton("Minimize",(d,w)->{
+            draftAddress=address.getText().toString();draftIndex=position.getSelectedItemPosition();
+            draftResume=new Button(this);draftResume.setText("New delivery • reopen");draftResume.setTextColor(0xFFE88A19);
+            FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.LEFT);lp.bottomMargin=dp(65);rootFrame.addView(draftResume,lp);draftResume.setOnClickListener(v->openDraft());
+        }).setPositiveButton("Save",null).create();
+        draftDialog.setOnCancelListener(d->cancelDraft());draftDialog.show();
+        draftDialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            String name=address.getText().toString().trim();if(name.isEmpty()){address.setError("Enter delivery address");return;}
+            try{insertDelivery(draftSlot,draftOriginal,draftPoint,name,position.getSelectedItemPosition());draftDialog.dismiss();cancelDraft();}
             catch(Exception e){Toast.makeText(this,"Cannot add delivery: "+e.getMessage(),Toast.LENGTH_LONG).show();}
         });
     }
     private JSONObject draftLeg(JSONObject a,JSONObject b)throws Exception{
-        JSONArray pts=new JSONArray();
-        for(JSONObject s:new JSONObject[]{a,b})pts.put(new JSONObject().put("latitude",s.getDouble("lat")).put("longitude",s.getDouble("lon")));
+        JSONArray pts=new JSONArray();for(JSONObject s:new JSONObject[]{a,b})pts.put(new JSONObject().put("latitude",s.getDouble("lat")).put("longitude",s.getDouble("lon")));
         return new JSONObject().put("unrouted",true).put("points",pts).put("summary",new JSONObject().put("lengthInMeters",0));
     }
     private void insertDelivery(String slot,JSONObject original,LatLng point,String address,int index)throws Exception{
         android.util.AtomicFile file=RouteInstaller.file(this,slot);
         JSONObject route=RouteInstaller.validate(new String(file.readFully(),StandardCharsets.UTF_8));
         if(!route.toString().equals(original.toString()))throw new Exception("Route changed; select location again");
-        JSONArray old=route.getJSONArray("stops"),oldLegs=route.getJSONArray("legs"),stops=new JSONArray(),legs=new JSONArray();
-        JSONObject added=new JSONObject().put("address",address).put("lat",point.getLatitude()).put("lon",point.getLongitude());
+        JSONArray old=route.getJSONArray("stops"),stops=new JSONArray(),legs=new JSONArray();
+        JSONArray preserved=originalLegs(route);
+        for(int i=0;i<preserved.length();i++)if(preserved.getJSONObject(i).optBoolean("unrouted"))throw new Exception("Reinstall original office route before adding stops");
+        route.put("original_legs",preserved);
+        JSONObject added=new JSONObject().put("address",address).put("lat",point.getLatitude()).put("lon",point.getLongitude()).put("added",true);
         for(int i=0;i<=old.length();i++){if(i==index)stops.put(added);if(i<old.length())stops.put(old.getJSONObject(i));}
-        JSONObject shop=route.optJSONObject("shop");
-        List<JSONObject> nodes=new ArrayList<>();if(shop!=null)nodes.add(shop);
+        JSONObject shop=route.optJSONObject("shop");List<JSONObject> nodes=new ArrayList<>();if(shop!=null)nodes.add(shop);
         for(int i=0;i<stops.length();i++)nodes.add(stops.getJSONObject(i));if(shop!=null)nodes.add(shop);
-        int inserted=index+(shop==null?0:1);
-        for(int i=0;i<nodes.size()-1;i++){
-            if(i==inserted-1||i==inserted)legs.put(draftLeg(nodes.get(i),nodes.get(i+1)));
-            else legs.put(oldLegs.getJSONObject(i<inserted-1?i:i-1));
-        }
+        for(int i=0;i<nodes.size()-1;i++)legs.put(draftLeg(nodes.get(i),nodes.get(i+1)));
         route.put("stops",stops).put("legs",legs);
         String raw=route.toString();RouteInstaller.validate(raw);
         java.io.FileOutputStream out=file.startWrite();
@@ -1381,7 +1424,7 @@ public class MainActivity extends Activity {
         org.maplibre.android.camera.CameraPosition camera=readyMap.getCameraPosition();boolean rotate=rotationUnlocked;
         showSavedRoute(slot);rotationUnlocked=rotate;readyMap.getUiSettings().setRotateGesturesEnabled(rotate);
         readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(camera));updateCompass();saveView();
-        Toast.makeText(this,"Delivery added — route segments not calculated",Toast.LENGTH_SHORT).show();
+        Toast.makeText(this,"Delivery added — original route preserved",Toast.LENGTH_SHORT).show();
     }
     private void installRoute(String raw) throws Exception {
         JSONObject route=RouteInstaller.validate(raw);
@@ -1405,7 +1448,7 @@ public class MainActivity extends Activity {
             pendingSlot=slot;
             demoRouteShown=false;
             if(readyStyle==null || readyMap==null) return;
-            JSONArray stops=route.getJSONArray("stops"), legs=route.getJSONArray("legs");
+            JSONArray stops=route.getJSONArray("stops"), legs=originalLegs(route);
             List<Feature> markers=new ArrayList<>(), lines=new ArrayList<>(), unrouted=new ArrayList<>();
             LatLngBounds.Builder bounds=new LatLngBounds.Builder();
             clearRouteLayers(readyStyle);
@@ -1424,7 +1467,7 @@ public class MainActivity extends Activity {
                 }
                 if(later) continue;
                 String icon="installed_stop_"+(i+1)+"_"+count;
-                readyStyle.addImage(icon,numberIcon(i+1,count));
+                readyStyle.addImage(icon,numberIcon(i+1,count,s.optBoolean("added")));
                 Feature f=Feature.fromGeometry(checkedPoint(lat,lon));
                 f.addStringProperty("icon",icon);
                 f.addStringProperty("address",s.getString("address"));
@@ -1453,6 +1496,11 @@ public class MainActivity extends Activity {
                     if(legs.getJSONObject(i).optBoolean("unrouted"))unrouted.add(f);else lines.add(f);
                 }
             }
+            for(int i=0;i<stops.length();i++){
+                JSONObject s=stops.getJSONObject(i);if(!s.optBoolean("added"))continue;
+                double lat=s.getDouble("lat"),lon=s.getDouble("lon");double[] hit=nearestLeg(legs,lat,lon);
+                if(hit[0]>=0&&hit[1]>10)unrouted.add(Feature.fromGeometry(LineString.fromLngLats(java.util.Arrays.asList(Point.fromLngLat(lon,lat),Point.fromLngLat(hit[3],hit[2])))));
+            }
             readyStyle.addSource(new GeoJsonSource("route-source",FeatureCollection.fromFeatures(lines)));
             addStyledRouteLine(readyStyle,"tomtom-route-line",lines);
             if(!unrouted.isEmpty()){readyStyle.addSource(new GeoJsonSource("unrouted-source",FeatureCollection.fromFeatures(unrouted)));LineLayer dashed=new LineLayer("unrouted-line","unrouted-source");dashed.withProperties(PropertyFactory.lineColor(0xFFFF8800),PropertyFactory.lineWidth(4f),PropertyFactory.lineDasharray(new Float[]{2f,2f}));readyStyle.addLayer(dashed);}
@@ -1473,7 +1521,7 @@ public class MainActivity extends Activity {
             status.setText(RouteInstaller.label(this,slot)+" • "+stops.length()+" stops");
             status.setGravity(Gravity.LEFT);
             long minutes=Math.round(seconds/60.0);
-            mileage.setText((unrouted.isEmpty()?String.format(Locale.US,"%.1f mi",meters/1609.344):"Partial: "+String.format(Locale.US,"%.1f mi",meters/1609.344))+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
+            mileage.setText((route.has("original_legs")?"Original: "+String.format(Locale.US,"%.1f mi",meters/1609.344):unrouted.isEmpty()?String.format(Locale.US,"%.1f mi",meters/1609.344):"Partial: "+String.format(Locale.US,"%.1f mi",meters/1609.344))+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
             populateDelivery(route,slot);
             saveView();
             logDebug("ROUTE "+slot+" stops="+stops.length()+" markers="+markers.size()+" points="+points);
@@ -1498,11 +1546,12 @@ public class MainActivity extends Activity {
     }
 
     private Bitmap numberIcon(int n) { return numberIcon(n,1); }
-    private Bitmap numberIcon(int n,int count) {
+    private Bitmap numberIcon(int n,int count) { return numberIcon(n,count,false); }
+    private Bitmap numberIcon(int n,int count,boolean added) {
         Bitmap b = Bitmap.createBitmap(88, 88, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setColor(n==0?0xFF278344:0xFF1A6DB3); c.drawCircle(44, 44, 39, p);
+        p.setColor(n==0?0xFF278344:added?0xFFE88A19:0xFF1A6DB3); c.drawCircle(44, 44, 39, p);
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(6);
         p.setColor(Color.WHITE); c.drawCircle(44, 44, 36, p);
         p.setStyle(Paint.Style.FILL); p.setColor(Color.WHITE);

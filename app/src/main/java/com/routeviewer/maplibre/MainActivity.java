@@ -105,7 +105,7 @@ public class MainActivity extends Activity {
         deliveryRows=new LinearLayout(this);deliveryRows.setOrientation(LinearLayout.VERTICAL);
         deliveryScroll.addView(deliveryRows);deliveryPanel.addView(deliveryScroll,new LinearLayout.LayoutParams(-1,0,1));
         FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(dp(200),-1,Gravity.RIGHT|Gravity.TOP);
-        lp.topMargin=dp(100);lp.bottomMargin=dp(58);
+        lp.topMargin=0;lp.bottomMargin=0;
         frame.addView(deliveryPanel,lp);
         deliveryGrab=new TextView(this);deliveryGrab.setText("⋮");deliveryGrab.setTextSize(28);deliveryGrab.setGravity(Gravity.CENTER);
         deliveryGrab.setTextColor(Color.WHITE);deliveryGrab.setBackgroundColor(0xFF34434F);
@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
     private void layoutDeliveryPanel(){
         if(rootFrame==null || deliveryPanel==null)return;
         int w=rootFrame.getWidth();if(w<=0)return;
-        int width=Math.min(Math.max(dp(140),panelDp==0?(int)(w*.30):dp(panelDp)),Math.max(dp(140),w-dp(72)));
+        int width=Math.min(Math.max(dp(140),panelDp==0?(int)(w*.22):dp(panelDp)),Math.max(dp(140),w-dp(72)));
         FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)deliveryPanel.getLayoutParams();lp.width=width;deliveryPanel.setLayoutParams(lp);
         FrameLayout.LayoutParams gp=(FrameLayout.LayoutParams)deliveryGrab.getLayoutParams();gp.rightMargin=panelCollapsed?0:width;deliveryGrab.setLayoutParams(gp);
         deliveryPanel.setVisibility(deliveryRoute!=null&&!panelCollapsed?android.view.View.VISIBLE:android.view.View.GONE);
@@ -155,6 +155,13 @@ public class MainActivity extends Activity {
         renderDeliveryRows(same?deliveryScroll.getScrollY():prefs().getInt("scroll_"+key,0));
         layoutDeliveryPanel();
     }
+    private String displayAddress(String full){
+        String[] parts=full.split(",");
+        if(parts.length<2)return full;
+        String street=parts[0].trim();
+        String town=parts[1].trim().replaceFirst("(?i)\\s+MA(?:\\s+\\d{5}(?:-\\d{4})?)?$","").replaceFirst("\\s+\\d{5}(?:-\\d{4})?$","");
+        return street+"\n"+town;
+    }
     private void renderDeliveryRows(int scroll){
         if(deliveryRoute==null)return;
         JSONArray stops=deliveryRoute.optJSONArray("stops");
@@ -164,10 +171,10 @@ public class MainActivity extends Activity {
             LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);
             TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(0xFF34434F);number.setGravity(Gravity.CENTER);
             row.addView(number,new LinearLayout.LayoutParams(dp(36),-1));wireGrab(number);
-            TextView address=new TextView(this);address.setText(stop.optString("address"));address.setTextColor(Color.BLACK);
+            TextView address=new TextView(this);address.setText(displayAddress(stop.optString("address")));address.setTextColor(Color.BLACK);
             address.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);address.setTextSize(fontSp);
             address.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);address.setPadding(dp(6),dp(6),dp(8),dp(6));address.setMinHeight(dp(rowDp));
-            address.setBackgroundColor(i==nextStop?0xFFD9EDCE:Color.WHITE);
+            address.setBackgroundColor(i==nextStop?0xFF8DDC91:Color.WHITE);
             row.addView(address,new LinearLayout.LayoutParams(0,-2,1));
             address.setOnClickListener(v->selectDelivery(index,false));
             address.setOnLongClickListener(v->{selectDelivery(index,true);return true;});
@@ -175,8 +182,7 @@ public class MainActivity extends Activity {
             android.view.View line=new android.view.View(this);line.setBackgroundColor(0xFFCCCCCC);deliveryRows.addView(line,new LinearLayout.LayoutParams(-1,dp(1)));
         }
         android.view.View end=new android.view.View(this);end.setBackgroundColor(0xFFC52C2C);deliveryRows.addView(end,new LinearLayout.LayoutParams(-1,dp(7)));
-        android.view.View space=new android.view.View(this);deliveryRows.addView(space,new LinearLayout.LayoutParams(-1,Math.max(dp(100),deliveryScroll.getHeight())));
-        deliveryScroll.post(()->{space.getLayoutParams().height=Math.max(dp(100),deliveryScroll.getHeight());space.requestLayout();deliveryScroll.post(()->deliveryScroll.scrollTo(0,scroll));});
+        deliveryScroll.post(()->deliveryScroll.scrollTo(0,scroll));
     }
     private void selectDelivery(int index,boolean longPress){
         try{
@@ -188,7 +194,7 @@ public class MainActivity extends Activity {
             if(!longPress){
                 nextStop=index+1;int y=deliveryRows.getChildAt(index*2).getTop();
                 prefs().edit().putInt("next_"+deliveryKey,nextStop).putInt("scroll_"+deliveryKey,y).apply();
-                for(int i=0;i<stops.length();i++)((LinearLayout)deliveryRows.getChildAt(i*2)).getChildAt(1).setBackgroundColor(i==nextStop?0xFFD9EDCE:Color.WHITE);
+                for(int i=0;i<stops.length();i++)((LinearLayout)deliveryRows.getChildAt(i*2)).getChildAt(1).setBackgroundColor(i==nextStop?0xFF8DDC91:Color.WHITE);
                 deliveryScroll.scrollTo(0,y);
             }
             sendBroadcast(intent);logDebug("LIST "+(longPress?"long":"tap")+" "+(index+1));
@@ -265,7 +271,7 @@ public class MainActivity extends Activity {
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.17 "+networkState());
+        logDebug("START v1.4.18 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -290,7 +296,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.17 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.18 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -298,15 +304,17 @@ public class MainActivity extends Activity {
         header.setBackgroundColor(0xBB182A36);
         header.setGravity(Gravity.CENTER_VERTICAL);
         status.setBackgroundColor(Color.TRANSPARENT);
-        header.addView(status,new LinearLayout.LayoutParams(0,-2,1));
-        mileage=new TextView(this); mileage.setTextColor(Color.WHITE); mileage.setGravity(Gravity.RIGHT); mileage.setPadding(12,12,18,12);
+        header.setOrientation(LinearLayout.VERTICAL);
+        header.setGravity(Gravity.LEFT);
+        header.addView(status,new LinearLayout.LayoutParams(-2,-2));
+        mileage=new TextView(this); mileage.setTextColor(Color.WHITE); mileage.setGravity(Gravity.LEFT); mileage.setPadding(12,12,18,12);
         header.addView(mileage,new LinearLayout.LayoutParams(-2,-2));
-        frame.addView(header,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
+        frame.addView(header,new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT));
         compass=new Button(this);
         compass.setAllCaps(false);
         compass.setText("↑ N");
         compass.setContentDescription("North up locked. Long press to unlock rotation.");
-        FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+        FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
         frame.addView(compass,cp);
         header.addOnLayoutChangeListener((v,l,t,rr,b,ol,ot,orr,ob)->{if(cp.topMargin!=b-t){cp.topMargin=b-t;compass.setLayoutParams(cp);}});
         compass.setOnClickListener(v->lockNorth());
@@ -418,7 +426,7 @@ public class MainActivity extends Activity {
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
-        frame.addView(controls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        frame.addView(controls, new FrameLayout.LayoutParams(Math.min(dp(440),getResources().getDisplayMetrics().widthPixels), -2, Gravity.BOTTOM|Gravity.LEFT));
         LinearLayout floating=new LinearLayout(this);
         menuButton=new Button(this); menuButton.setText("Menu");
         menuButton.setOnClickListener(v -> {controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
@@ -426,7 +434,7 @@ public class MainActivity extends Activity {
         Button fit=new Button(this); fit.setText("Fit Route");
         fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {lockNorth();readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
         floating.addView(fit);
-        frame.addView(floating,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.RIGHT));
+        frame.addView(floating,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.LEFT));
         floating.setVisibility(android.view.View.GONE);
         menuButton.setTag(floating);
         createDeliveryPanel(frame);
@@ -521,7 +529,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.17 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.18 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -1428,7 +1436,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.17\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.18\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");

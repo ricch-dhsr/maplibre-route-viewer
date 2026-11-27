@@ -70,6 +70,10 @@ public class MainActivity extends Activity {
     private int activeRegionIndex = -1;
     private OfflineRegion offlineRegion;
     private boolean downloading;
+    private int markerPercent=100, retryCount=0;
+    private long retryProgress=-1;
+    private boolean retryPending=false;
+    private final android.os.Handler retryHandler=new android.os.Handler(android.os.Looper.getMainLooper());
     private boolean downloadAll;
     private boolean regionsReady;
     private Button allButton;
@@ -123,10 +127,11 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        markerPercent=Math.max(20,Math.min(200,getPreferences(MODE_PRIVATE).getInt("marker_percent",100)));
         registerReceiver(routeChanged,new android.content.IntentFilter("com.routeviewer.maplibre.ROUTE_CHANGED"));
         MapLibre.getInstance(this);
         org.maplibre.android.log.Logger.setVerbosity(android.util.Log.VERBOSE);
-        logDebug("START v1.4.15 "+networkState());
+        logDebug("START v1.4.16 "+networkState());
 
         // Limit this application's concurrent HTTP requests and identify the client.
         Dispatcher dispatcher = new Dispatcher();
@@ -151,7 +156,7 @@ public class MainActivity extends Activity {
         mapView = new MapView(this);
         frame.addView(mapView);
         status = new TextView(this);
-        status.setText("MapLibre Route Viewer v1.4.15 • AM / PM / EX");
+        status.setText("MapLibre Route Viewer v1.4.16 • AM / PM / EX");
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xBB182A36);
         status.setPadding(18, 12, 18, 12);
@@ -266,6 +271,8 @@ public class MainActivity extends Activity {
             });
         }
         controls.addView(tools);
+        Button settings=new Button(this); settings.setText("Settings");
+        settings.setOnClickListener(v -> showMarkerSettings()); controls.addView(settings);
         Button exportButton=new Button(this); exportButton.setText("Export Debug Log / Database Diagnostics");
         exportButton.setOnClickListener(v -> exportDebug()); maintenance.addView(exportButton);
         controls.addView(maintenance);
@@ -375,7 +382,7 @@ public class MainActivity extends Activity {
                 showRouteButton.setEnabled(true);
                 showRegionButton.setEnabled(true);
                 diagnosticButton.setEnabled(true);
-                status.setText("v1.4.15 • Import route JSON or select AM / PM / EX");
+                status.setText("v1.4.16 • Import route JSON or select AM / PM / EX");
                 logDebug("STYLE ready sources="+style.getSources().size());
                 if (pendingSlot != null) showSavedRoute(pendingSlot);
                 else if(demoRouteShown) try {loadRoute(style,map);} catch(Exception e){logDebug("Demo restore "+e);}
@@ -543,6 +550,33 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void applyMarkerSize(int percent) {
+        markerPercent=percent;
+        getPreferences(MODE_PRIVATE).edit().putInt("marker_percent",percent).apply();
+        if(readyStyle!=null) {
+            Layer layer=readyStyle.getLayer("numbered-stops");
+            if(layer instanceof SymbolLayer) layer.setProperties(PropertyFactory.iconSize(percent/100f));
+        }
+    }
+    private void showMarkerSettings() {
+        LinearLayout panel=new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(24,16,24,16);
+        TextView label=new TextView(this); label.setText("Marker size: "+markerPercent+"%");
+        panel.addView(label);
+        android.widget.SeekBar slider=new android.widget.SeekBar(this);
+        slider.setMax(36); slider.setProgress((markerPercent-20)/5); panel.addView(slider);
+        slider.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(android.widget.SeekBar bar,int progress,boolean user){
+                int percent=20+progress*5; label.setText("Marker size: "+percent+"%"); applyMarkerSize(percent);
+            }
+            public void onStartTrackingTouch(android.widget.SeekBar bar){}
+            public void onStopTrackingTouch(android.widget.SeekBar bar){}
+        });
+        Button reset=new Button(this); reset.setText("Reset to 100%"); panel.addView(reset);
+        reset.setOnClickListener(v->slider.setProgress(16));
+        new android.app.AlertDialog.Builder(this).setTitle("Display settings").setView(panel).setPositiveButton("Done",null).show();
+    }
+
     private void startOfflineDownload() {
         if (downloading || !regionsReady) return;
         int index = regionPicker.getSelectedItemPosition();
@@ -555,6 +589,7 @@ public class MainActivity extends Activity {
         }
         allButton.setEnabled(false);
         downloading = true;
+        retryCount=0; retryProgress=-1; retryPending=false;
         downloadStart = android.os.SystemClock.elapsedRealtime();
         initialBytes = -1;
         lastDownloadStatus = null;
@@ -606,6 +641,7 @@ public class MainActivity extends Activity {
     }
 
     private void finishWithError(String message) {
+        retryHandler.removeCallbacksAndMessages(null); retryPending=false;
         downloadAll = false;
         allButton.setEnabled(regionsReady);
         if (activeRegionIndex >= 0) saveDownloadReport(activeRegionIndex, lastDownloadStatus, message);
@@ -617,9 +653,11 @@ public class MainActivity extends Activity {
     }
 
     private void activateRegion(OfflineRegion region, int index) {
+        offlineRegion=region;
         region.setObserver(new OfflineRegion.OfflineRegionObserver() {
             @Override public void onStatusChanged(OfflineRegionStatus st) {
-                if (activeRegionIndex != index) return;
+                if (activeRegionIndex != index || retryPending || isDestroyed()) return;
+                if(st.getCompletedResourceCount()>retryProgress){retryProgress=st.getCompletedResourceCount(); retryCount=0;}
                 lastDownloadStatus = st;
                 long tiles = st.getCompletedTileCount();
                 long bytes = st.getCompletedResourceSize();
@@ -650,8 +688,28 @@ public class MainActivity extends Activity {
                 }
             }
             @Override public void onError(OfflineRegionError error) {
+                if(activeRegionIndex!=index || retryPending || isDestroyed()) return;
+                String reason=String.valueOf(error.getReason());
+                String detail=error.getMessage();
+                String lower=(reason+" "+detail).toLowerCase(Locale.ROOT);
+                boolean transientError=lower.contains("connection") || lower.contains("server") || lower.contains("resolve host") || lower.contains("timeout") || lower.contains("network");
+                if(!transientError || retryCount>=5){
+                    region.setDownloadState(OfflineRegion.STATE_INACTIVE);
+                    finishWithError("Download error: "+detail); return;
+                }
+                retryPending=true;
+                int attempt=++retryCount;
+                long delay=attempt==1?10000L:attempt==2?30000L:60000L;
                 region.setDownloadState(OfflineRegion.STATE_INACTIVE);
-                finishWithError("Download error: " + error.getMessage());
+                logDebug("DOWNLOAD retry "+attempt+" in "+delay+"ms: "+detail);
+                offlineStatus.setText(REGION_NAMES[index]+": retry "+attempt+"/5 in "+(delay/1000)+" sec. Saved tiles retained.");
+                retryHandler.postDelayed(()->{
+                    if(isDestroyed() || activeRegionIndex!=index || !downloading) return;
+                    retryPending=false;
+                    if(getFilesDir().getUsableSpace()<256L*1024*1024){finishWithError("Download stopped: low storage");return;}
+                    offlineStatus.setText("Resuming "+REGION_NAMES[index]+"...");
+                    region.setDownloadState(OfflineRegion.STATE_ACTIVE);
+                },delay);
             }
             @Override public void mapboxTileCountLimitExceeded(long limit) {
                 region.setDownloadState(OfflineRegion.STATE_INACTIVE);
@@ -746,7 +804,7 @@ public class MainActivity extends Activity {
             PropertyFactory.iconImage("{icon}"),
             PropertyFactory.iconAllowOverlap(true),
             PropertyFactory.iconIgnorePlacement(true),
-            PropertyFactory.iconSize(1f)
+            PropertyFactory.iconSize(markerPercent/100f)
         );
         style.addLayer(markers);
         if (geometry.length() >= 2) {
@@ -1066,7 +1124,7 @@ public class MainActivity extends Activity {
             addStyledRouteLine(readyStyle,"tomtom-route-line",lines);
             readyStyle.addSource(new GeoJsonSource("stops-source",FeatureCollection.fromFeatures(markers)));
             SymbolLayer layer=new SymbolLayer("numbered-stops","stops-source");
-            layer.withProperties(PropertyFactory.iconImage(Expression.get("icon")),PropertyFactory.iconAllowOverlap(true),PropertyFactory.iconIgnorePlacement(true),PropertyFactory.iconSize(1f));
+            layer.withProperties(PropertyFactory.iconImage(Expression.get("icon")),PropertyFactory.iconAllowOverlap(true),PropertyFactory.iconIgnorePlacement(true),PropertyFactory.iconSize(markerPercent/100f));
             readyStyle.addLayer(layer);
             try {
                 routeBounds=bounds.build();
@@ -1208,7 +1266,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){b.append("QUERY ERROR ").append(e).append("\n");}
     }
     private void inspectDatabase(String styleJson){
-        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.15\n");
+        StringBuilder b=new StringBuilder("\nOFFLINE DATABASE READ-ONLY INSPECTION v1.4.16\n");
         try{
             JSONObject sources=new JSONObject(styleJson).optJSONObject("sources");
             b.append("CURRENT STYLE SOURCES: ").append(sources).append("\n");
@@ -1331,7 +1389,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() { super.onResume(); mapView.onResume(); refreshSlotLabels(); }
     @Override protected void onPause() { mapView.onPause(); super.onPause(); }
     @Override protected void onStop() { mapView.onStop(); super.onStop(); }
-    @Override protected void onDestroy() { unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
+    @Override protected void onDestroy() { retryHandler.removeCallbacksAndMessages(null); if(downloading && offlineRegion!=null){activeRegionIndex=-1;offlineRegion.setDownloadState(OfflineRegion.STATE_INACTIVE);} unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
     @Override public void onLowMemory() { super.onLowMemory(); mapView.onLowMemory(); }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); mapView.onSaveInstanceState(state);

@@ -184,6 +184,90 @@ public class MainActivity extends Activity {
         android.view.View end=new android.view.View(this);end.setBackgroundColor(0xFFC52C2C);deliveryRows.addView(end,new LinearLayout.LayoutParams(-1,dp(7)));
         deliveryScroll.post(()->deliveryScroll.scrollTo(0,scroll));
     }
+
+    private final android.os.Handler navHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private final java.util.ArrayList<android.view.View> floatingViews=new java.util.ArrayList<>();
+    private String navAddress="";
+    private boolean navActive=false, mapsPrepared=false, showingGoogle=false;
+    private void launchDestination(JSONObject stop) throws Exception {
+        navHandler.removeCallbacksAndMessages(null);
+        navAddress=stop.getString("address").replaceFirst("\\s+\\d{5}(?:-\\d{4})?\\s*$","").trim();
+        String lat=String.valueOf(stop.getDouble("lat")),lon=String.valueOf(stop.getDouble("lon"));
+        android.content.Intent osm=new android.content.Intent(android.content.Intent.ACTION_VIEW,
+            android.net.Uri.parse("osmand.api://navigate?dest_lat="+lat+"&dest_lon="+lon+"&dest_name="+android.net.Uri.encode(navAddress)+"&profile=car&force=1"));
+        osm.setPackage("net.osmand");
+        navActive=true;mapsPrepared=false;showingGoogle=false;
+        if(android.provider.Settings.canDrawOverlays(this))showFloating();
+        else Toast.makeText(this,"Enable floating controls in Navigation settings",Toast.LENGTH_LONG).show();
+        if(prefs().getBoolean("prepare_google",true)){
+            try{
+                android.content.Intent g=new android.content.Intent(android.content.Intent.ACTION_VIEW,android.net.Uri.parse("geo:0,0?q="+lat+","+lon));
+                g.setPackage("com.google.android.apps.maps");startActivity(g);mapsPrepared=true;showingGoogle=true;
+            }catch(Exception e){logDebug("Google launch "+e);}
+        }
+        Runnable go=()->{try{startActivity(osm);showingGoogle=false;}catch(Exception e){logDebug("OsmAnd launch "+e);Toast.makeText(this,"OsmAnd launch failed",Toast.LENGTH_LONG).show();}};
+        if(mapsPrepared)navHandler.postDelayed(go,prefs().getInt("nav_delay",250));else go.run();
+    }
+    private void hideFloating(){
+        android.view.WindowManager wm=(android.view.WindowManager)getSystemService(WINDOW_SERVICE);
+        for(android.view.View v:floatingViews)try{wm.removeViewImmediate(v);}catch(Exception ignored){}
+        floatingViews.clear();
+    }
+    private void showFloating(){
+        hideFloating();
+        if(!navActive||!android.provider.Settings.canDrawOverlays(this))return;
+        if(prefs().getBoolean("float_list",true))addFloating("list","LIST",()->{
+            android.content.Intent i=new android.content.Intent(this,MainActivity.class);
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT|android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        });
+        if(prefs().getBoolean("float_address",true))addFloating("address",navAddress,()->{
+            if(!mapsPrepared)return;
+            String pkg=showingGoogle?"net.osmand":"com.google.android.apps.maps";
+            android.content.Intent i=getPackageManager().getLaunchIntentForPackage(pkg);
+            if(i!=null)try{i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(i);showingGoogle=!showingGoogle;}catch(Exception e){logDebug("FOB toggle "+e);}
+        });
+    }
+    private void addFloating(String key,String value,Runnable click){
+        android.view.WindowManager wm=(android.view.WindowManager)getSystemService(WINDOW_SERVICE);
+        TextView t=new TextView(this);t.setText(value);t.setTextColor(0xFFFF0000);t.setTypeface(null,android.graphics.Typeface.BOLD);
+        t.setTextSize(prefs().getInt("float_size_"+key,20));t.setPadding(dp(8),dp(8),dp(8),dp(8));t.setMaxWidth(getResources().getDisplayMetrics().widthPixels-dp(16));
+        android.view.WindowManager.LayoutParams p=new android.view.WindowManager.LayoutParams(-2,-2,android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,android.graphics.PixelFormat.TRANSLUCENT);
+        p.gravity=Gravity.TOP|Gravity.LEFT;p.x=prefs().getInt("float_x_"+key,dp(12));p.y=prefs().getInt("float_y_"+key,dp(key.equals("list")?100:160));
+        t.setOnTouchListener(new android.view.View.OnTouchListener(){
+            float x,y;int ox,oy;boolean moved;
+            public boolean onTouch(android.view.View v,android.view.MotionEvent e){
+                switch(e.getActionMasked()){
+                    case android.view.MotionEvent.ACTION_DOWN:x=e.getRawX();y=e.getRawY();ox=p.x;oy=p.y;moved=false;return true;
+                    case android.view.MotionEvent.ACTION_MOVE:
+                        if(Math.abs(e.getRawX()-x)+Math.abs(e.getRawY()-y)>dp(8))moved=true;
+                        if(moved){p.x=Math.max(0,Math.min(getResources().getDisplayMetrics().widthPixels-t.getWidth(),ox+(int)(e.getRawX()-x)));p.y=Math.max(0,Math.min(getResources().getDisplayMetrics().heightPixels-t.getHeight(),oy+(int)(e.getRawY()-y)));wm.updateViewLayout(t,p);}return true;
+                    case android.view.MotionEvent.ACTION_UP:
+                        if(moved)prefs().edit().putInt("float_x_"+key,p.x).putInt("float_y_"+key,p.y).apply();else click.run();return true;
+                    case android.view.MotionEvent.ACTION_CANCEL:return true;
+                }return false;
+            }
+        });
+        try{wm.addView(t,p);floatingViews.add(t);}catch(Exception e){logDebug("FOB "+e);}
+    }
+    private void showNavigationSettings(){
+        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(16),dp(8),dp(16),dp(8));
+        String[] keys={"native_nav","prepare_google","float_list","float_address"};
+        String[] names={"Native navigation (off = Tasker)","Prepare Google Maps","Floating LIST","Floating address"};
+        for(int n=0;n<keys.length;n++){String key=keys[n];android.widget.CheckBox b=new android.widget.CheckBox(this);b.setText(names[n]);b.setChecked(prefs().getBoolean(key,true));b.setOnCheckedChangeListener((v,on)->prefs().edit().putBoolean(key,on).apply());panel.addView(b);}
+        TextView delay=new TextView(this);delay.setText("Google launch delay: "+prefs().getInt("nav_delay",250)+" ms");panel.addView(delay);
+        android.widget.SeekBar bar=new android.widget.SeekBar(this);bar.setMax(40);bar.setProgress(prefs().getInt("nav_delay",250)/50);panel.addView(bar);
+        bar.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(android.widget.SeekBar b,int p,boolean u){prefs().edit().putInt("nav_delay",p*50).apply();delay.setText("Google launch delay: "+p*50+" ms");}public void onStartTrackingTouch(android.widget.SeekBar b){}public void onStopTrackingTouch(android.widget.SeekBar b){}});
+        for(String key:new String[]{"list","address"}){
+            TextView label=new TextView(this);label.setText(key+" text size: "+prefs().getInt("float_size_"+key,20));panel.addView(label);
+            android.widget.SeekBar size=new android.widget.SeekBar(this);size.setMax(36);size.setProgress(prefs().getInt("float_size_"+key,20)-12);panel.addView(size);
+            size.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(android.widget.SeekBar b,int p,boolean u){prefs().edit().putInt("float_size_"+key,p+12).apply();label.setText(key+" text size: "+(p+12));}public void onStartTrackingTouch(android.widget.SeekBar b){}public void onStopTrackingTouch(android.widget.SeekBar b){}});
+        }
+        Button permission=new Button(this);permission.setText("Allow display over other apps");panel.addView(permission);permission.setOnClickListener(v->startActivity(new android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,android.net.Uri.parse("package:"+getPackageName()))));
+        android.widget.ScrollView scroll=new android.widget.ScrollView(this);scroll.addView(panel);
+        new android.app.AlertDialog.Builder(this).setTitle("Navigation settings").setView(scroll).setPositiveButton("Done",null).show();
+    }
+
     private void selectDelivery(int index,boolean longPress){
         try{
             JSONArray stops=deliveryRoute.getJSONArray("stops");JSONObject s=stops.getJSONObject(index);
@@ -197,7 +281,7 @@ public class MainActivity extends Activity {
                 for(int i=0;i<stops.length();i++)((LinearLayout)deliveryRows.getChildAt(i*2)).getChildAt(1).setBackgroundColor(i==nextStop?0xFF8DDC91:Color.WHITE);
                 deliveryScroll.scrollTo(0,y);
             }
-            sendBroadcast(intent);logDebug("LIST "+(longPress?"long":"tap")+" "+(index+1));
+            if(longPress||!prefs().getBoolean("native_nav",true))sendBroadcast(intent);else launchDestination(s);logDebug("LIST "+(longPress?"long":"tap")+" "+(index+1));
         }catch(Exception e){logDebug("LIST error "+e);Toast.makeText(this,"Selection failed: "+e.getMessage(),Toast.LENGTH_LONG).show();}
     }
 
@@ -742,6 +826,7 @@ public class MainActivity extends Activity {
         }
         Button resetList=new Button(this);resetList.setText("Reset list position");panel.addView(resetList);
         resetList.setOnClickListener(v->{nextStop=0;prefs().edit().putInt("next_"+deliveryKey,0).putInt("scroll_"+deliveryKey,0).apply();renderDeliveryRows(0);});
+        Button navSettings=new Button(this);navSettings.setText("Navigation settings");panel.addView(navSettings);navSettings.setOnClickListener(v->showNavigationSettings());
         new android.app.AlertDialog.Builder(this).setTitle("Display settings").setView(panel).setPositiveButton("Done",null).show();
     }
 
@@ -1556,10 +1641,10 @@ public class MainActivity extends Activity {
  @Override public void onReceive(Context c,android.content.Intent i){refreshSlotLabels();if(i.getStringExtra("route").equals(pendingSlot))showSavedRoute(pendingSlot);}
  };
  private void refreshSlotLabels(){for(String s:routeSlots){Button b=slotButtons.get(s);if(b!=null)b.setText(RouteInstaller.label(this,s));}}
-    @Override protected void onResume() { super.onResume(); mapView.onResume(); refreshSlotLabels(); }
+    @Override protected void onResume() { super.onResume(); hideFloating(); mapView.onResume(); refreshSlotLabels(); }
     @Override protected void onPause() { saveView();if(deliveryRoute!=null&&!panelCollapsed)prefs().edit().putInt("scroll_"+deliveryKey,deliveryScroll.getScrollY()).apply(); mapView.onPause(); super.onPause(); }
     @Override protected void onStop() { mapView.onStop(); super.onStop(); }
-    @Override protected void onDestroy() { retryHandler.removeCallbacksAndMessages(null); if(downloading && offlineRegion!=null){activeRegionIndex=-1;offlineRegion.setDownloadState(OfflineRegion.STATE_INACTIVE);} unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
+    @Override protected void onDestroy() { hideFloating(); navHandler.removeCallbacksAndMessages(null); retryHandler.removeCallbacksAndMessages(null); if(downloading && offlineRegion!=null){activeRegionIndex=-1;offlineRegion.setDownloadState(OfflineRegion.STATE_INACTIVE);} unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
     @Override public void onLowMemory() { super.onLowMemory(); mapView.onLowMemory(); }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); mapView.onSaveInstanceState(state);

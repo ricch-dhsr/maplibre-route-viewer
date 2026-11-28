@@ -151,7 +151,7 @@ public class MainActivity extends Activity {
         String key=slot+"_"+route.optString("date","")+"_"+Integer.toHexString(route.optJSONArray("stops").toString().hashCode());
         boolean same=key.equals(deliveryKey);
         deliveryRoute=route;deliveryKey=key;
-        nextStop=prefs().getInt("next_"+key,0);
+        nextStop=skipDeleted(route.optJSONArray("stops"),prefs().getInt("next_"+key,0));
         renderDeliveryRows(same?deliveryScroll.getScrollY():prefs().getInt("scroll_"+key,0));
         layoutDeliveryPanel();
     }
@@ -169,15 +169,16 @@ public class MainActivity extends Activity {
         for(int i=0;i<stops.length();i++){
             final int index=i;JSONObject stop=stops.optJSONObject(i);
             LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);
-            TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(stop.optBoolean("added")?0xFFE88A19:0xFF34434F);number.setGravity(Gravity.CENTER);
+            TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(stopColor(stop,0xFF34434F));number.setGravity(Gravity.CENTER);
             row.addView(number,new LinearLayout.LayoutParams(dp(36),-1));wireGrab(number);
             TextView address=new TextView(this);address.setText(displayAddress(stop.optString("address")));address.setTextColor(Color.BLACK);
             address.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);address.setTextSize(fontSp);
             address.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);address.setPadding(dp(6),dp(6),dp(8),dp(6));address.setMinHeight(dp(rowDp));
-            address.setBackgroundColor(i==nextStop?0xFF8DDC91:Color.WHITE);
+            address.setBackgroundColor(stop.optBoolean("deleted")?0xFFFCE1E1:i==nextStop?0xFF8DDC91:Color.WHITE);
+            if(stop.optBoolean("deleted")){address.setTextColor(0xFFBC2222);address.setPaintFlags(address.getPaintFlags()|Paint.STRIKE_THRU_TEXT_FLAG);}
             row.addView(address,new LinearLayout.LayoutParams(0,-2,1));
             address.setOnClickListener(v->selectDelivery(index,false));
-            address.setOnLongClickListener(v->{selectDelivery(index,true);return true;});
+            address.setOnLongClickListener(v->{deliveryOptions(index);return true;});
             deliveryRows.addView(row,new LinearLayout.LayoutParams(-1,-2));
             android.view.View line=new android.view.View(this);line.setBackgroundColor(0xFFCCCCCC);deliveryRows.addView(line,new LinearLayout.LayoutParams(-1,dp(1)));
         }
@@ -280,6 +281,143 @@ public class MainActivity extends Activity {
         new android.app.AlertDialog.Builder(this).setTitle("Navigation settings").setView(scroll).setPositiveButton("Done",null).show();
     }
 
+    private JSONObject relocatingRoute;
+    private int relocatingIndex=-1;
+    private int stopColor(JSONObject s,int normal){
+        return s.optBoolean("deleted")?0xFFC52C2C:s.optBoolean("added")?0xFFE88A19:s.optBoolean("edited")?0xFF8545B5:normal;
+    }
+    private int skipDeleted(JSONArray stops,int n){
+        while(n<stops.length()&&stops.optJSONObject(n).optBoolean("deleted"))n++;
+        return n;
+    }
+    private void editError(Exception e){Toast.makeText(this,e.getMessage(),Toast.LENGTH_LONG).show();}
+    private JSONObject currentForEdit(JSONObject expected)throws Exception{
+        JSONObject route=RouteInstaller.validate(new String(RouteInstaller.file(this,expected.getString("route")).readFully(),StandardCharsets.UTF_8));
+        if(!route.toString().equals(expected.toString()))throw new Exception("Route changed; reopen delivery options");
+        return route;
+    }
+    private void rememberEdit(JSONObject route)throws Exception{
+        JSONArray stops=route.getJSONArray("stops");
+        if(!route.has("office_stops")){
+            JSONArray base=new JSONArray();
+            for(int i=0;i<stops.length();i++)if(!stops.getJSONObject(i).optBoolean("added"))base.put(new JSONObject(stops.getJSONObject(i).toString()));
+            route.put("office_stops",base);
+        }
+        JSONArray history=route.optJSONArray("edit_history");if(history==null)history=new JSONArray();
+        JSONArray bounded=new JSONArray();
+        for(int i=Math.max(0,history.length()-19);i<history.length();i++)bounded.put(history.get(i));
+        bounded.put(new JSONObject().put("stops",new JSONArray(stops.toString())).put("next",nextStop));
+        route.put("edit_history",bounded).put("original_legs",originalLegs(route));
+    }
+    private void saveEdited(JSONObject route,JSONArray stops,int next)throws Exception{
+        if(stops.length()==0)throw new Exception("Keep at least one delivery; mark the last delivery deleted instead");
+        JSONArray legs=new JSONArray();List<JSONObject> nodes=new ArrayList<>();
+        JSONObject shop=route.optJSONObject("shop");if(shop!=null)nodes.add(shop);
+        for(int i=0;i<stops.length();i++)nodes.add(stops.getJSONObject(i));if(shop!=null)nodes.add(shop);
+        for(int i=0;i<nodes.size()-1;i++)legs.put(draftLeg(nodes.get(i),nodes.get(i+1)));
+        route.put("stops",stops).put("legs",legs);
+        String raw=route.toString();RouteInstaller.validate(raw);
+        String slot=route.getString("route");android.util.AtomicFile file=RouteInstaller.file(this,slot);
+        java.io.FileOutputStream out=file.startWrite();
+        try{out.write(raw.getBytes(StandardCharsets.UTF_8));file.finishWrite(out);}catch(Exception e){file.failWrite(out);throw e;}
+        String key=slot+"_"+route.optString("date","")+"_"+Integer.toHexString(stops.toString().hashCode());
+        prefs().edit().putInt("next_"+key,skipDeleted(stops,Math.max(0,Math.min(next,stops.length())))).putInt("scroll_"+key,deliveryScroll.getScrollY()).apply();
+        org.maplibre.android.camera.CameraPosition camera=readyMap.getCameraPosition();boolean rotate=rotationUnlocked;
+        showSavedRoute(slot);rotationUnlocked=rotate;readyMap.getUiSettings().setRotateGesturesEnabled(rotate);
+        readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(camera));updateCompass();saveView();
+    }
+    private void modifyStop(JSONObject expected,int index,String action,String address,LatLng point,int target){
+        try{
+            JSONObject route=currentForEdit(expected);rememberEdit(route);
+            JSONArray old=route.getJSONArray("stops"),stops=new JSONArray();JSONObject s=old.getJSONObject(index);
+            int next=nextStop;
+            if(action.equals("delete"))s.put("deleted",true);
+            if(action.equals("restore"))s.remove("deleted");
+            if(action.equals("address"))s.put("address",address).put("edited",true);
+            if(action.equals("location"))s.put("lat",point.getLatitude()).put("lon",point.getLongitude()).put("edited",true).put("relocated",true);
+            if(action.equals("move"))s.put("edited",true);
+            for(int i=0;i<old.length();i++)if(i!=index||(!action.equals("remove")&&!action.equals("move")))stops.put(old.get(i));
+            if(action.equals("remove")&&index<next)next--;
+            if(action.equals("move")){
+                JSONArray moved=new JSONArray();for(int i=0;i<=stops.length();i++){if(i==target)moved.put(s);if(i<stops.length())moved.put(stops.get(i));}
+                if(next==index)next=target;else{if(index<next)next--;if(target<=next)next++;}
+                stops=moved;
+            }
+            saveEdited(route,stops,next);
+        }catch(Exception e){editError(e);}
+    }
+    private void deliveryOptions(int index){
+        JSONObject expected=deliveryRoute;if(expected==null)return;
+        JSONObject s=expected.optJSONArray("stops").optJSONObject(index);if(s==null)return;
+        String[] options={"Navigate","Edit address","Change marker location","Move delivery in list",s.optBoolean("deleted")?"Restore delivery":"Remove delivery","Satellite view","Street view","Tasker options"};
+        new android.app.AlertDialog.Builder(this).setTitle((index+1)+" — "+s.optString("address")).setItems(options,(d,w)->{
+            if(expected!=deliveryRoute)return;
+            if(w==0){selectDelivery(index,false);return;}
+            if(w==1){
+                android.widget.EditText input=new android.widget.EditText(this);input.setText(s.optString("address"));
+                new android.app.AlertDialog.Builder(this).setTitle("Edit address").setView(input).setNegativeButton("Cancel",null).setPositiveButton("Save",(a,b)->{String name=input.getText().toString().trim();if(!name.isEmpty())modifyStop(expected,index,"address",name,null,0);}).show();
+            }else if(w==2){
+                cancelDraft();relocatingRoute=expected;relocatingIndex=index;
+                draftResume=new Button(this);draftResume.setText("Cancel marker move");FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.LEFT);lp.bottomMargin=dp(65);rootFrame.addView(draftResume,lp);
+                draftResume.setOnClickListener(v->{relocatingRoute=null;relocatingIndex=-1;cancelDraft();});
+                Toast.makeText(this,"Long press the new marker location",Toast.LENGTH_LONG).show();
+            }else if(w==3){
+                JSONArray stops=expected.optJSONArray("stops");List<String> choices=new ArrayList<>();choices.add("0 — Before first delivery");
+                for(int i=0;i<stops.length();i++)if(i!=index)choices.add((i+1)+" — "+stops.optJSONObject(i).optString("address"));
+                new android.app.AlertDialog.Builder(this).setTitle("Move delivery — Add after").setItems(choices.toArray(new String[0]),(a,b)->modifyStop(expected,index,"move",null,null,b)).setNegativeButton("Cancel",null).show();
+            }else if(w==4){
+                if(s.optBoolean("deleted"))modifyStop(expected,index,"restore",null,null,0);
+                else new android.app.AlertDialog.Builder(this).setTitle("Remove delivery?").setItems(new String[]{"Permanently Remove","Leave and Mark Deleted"},(a,b)->{
+                    if(b==0)new android.app.AlertDialog.Builder(this).setMessage("Permanently remove this stop from the list?").setNegativeButton("Cancel",null).setPositiveButton("Remove",(x,y)->modifyStop(expected,index,"remove",null,null,0)).show();
+                    else modifyStop(expected,index,"delete",null,null,0);
+                }).setNegativeButton("Cancel",null).show();
+            }else if(w==5||w==6){
+                String coord=s.optDouble("lat")+","+s.optDouble("lon");
+                String uri=w==5?"https://www.google.com/maps/@?api=1&map_action=map&center="+coord+"&zoom=19&basemap=satellite":"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint="+coord;
+                try{startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,android.net.Uri.parse(uri)).setPackage("com.google.android.apps.maps"));}catch(Exception e){editError(e);}
+            }else selectDelivery(index,true);
+        }).setNegativeButton("Cancel",null).show();
+    }
+    private void routeEditMenu(){
+        if(deliveryRoute==null)return;JSONObject expected=deliveryRoute;
+        new android.app.AlertDialog.Builder(this).setTitle("Route changes").setItems(new String[]{"Undo last change","Restore original office route"},(d,w)->{
+            if(w==0)restoreEdit(expected,false);
+            else new android.app.AlertDialog.Builder(this).setMessage("Discard all driver changes to this route?").setNegativeButton("Cancel",null).setPositiveButton("Restore",(a,b)->restoreEdit(expected,true)).show();
+        }).setNegativeButton("Cancel",null).show();
+    }
+    private void restoreEdit(JSONObject expected,boolean all){
+        try{
+            JSONObject route=currentForEdit(expected);JSONArray history=route.optJSONArray("edit_history");
+            if(all){
+                JSONArray base=route.optJSONArray("office_stops");if(base==null){if(!route.has("original_legs"))throw new Exception("Already original");rememberEdit(route);base=route.getJSONArray("office_stops");}else rememberEdit(route);
+                saveEdited(route,new JSONArray(base.toString()),0);
+            }else{
+                if(history==null||history.length()==0)throw new Exception("No saved undo history");
+                JSONObject last=history.getJSONObject(history.length()-1);history.remove(history.length()-1);
+                saveEdited(route,last.getJSONArray("stops"),last.optInt("next",0));
+            }
+        }catch(Exception e){editError(e);}
+    }
+    private boolean handleMapLongPress(LatLng point){
+        if(relocatingRoute!=null){
+            JSONObject expected=relocatingRoute;int index=relocatingIndex;relocatingRoute=null;relocatingIndex=-1;cancelDraft();
+            if(expected==deliveryRoute)new android.app.AlertDialog.Builder(this).setMessage("Move marker to selected location?").setNegativeButton("Cancel",null).setPositiveButton("Move",(d,w)->modifyStop(expected,index,"location",null,point,0)).show();
+            return true;
+        }
+        if(draftOriginal==null&&deliveryRoute!=null&&readyStyle!=null&&readyStyle.getLayer("numbered-stops")!=null){
+            android.graphics.PointF p=readyMap.getProjection().toScreenLocation(point);
+            List<Feature> hits=readyMap.queryRenderedFeatures(p,"numbered-stops");
+            for(Feature f:hits)if(f.hasProperty("number")){
+                int index=f.getNumberProperty("number").intValue()-1;JSONArray stops=deliveryRoute.optJSONArray("stops");JSONObject s=stops.optJSONObject(index);if(s==null)continue;
+                List<Integer> ids=new ArrayList<>();List<String> names=new ArrayList<>();
+                for(int i=0;i<stops.length();i++){JSONObject other=stops.optJSONObject(i);if(other.optDouble("lat")==s.optDouble("lat")&&other.optDouble("lon")==s.optDouble("lon")){ids.add(i);names.add((i+1)+" — "+other.optString("address"));}}
+                if(ids.size()==1)deliveryOptions(index);else new android.app.AlertDialog.Builder(this).setTitle("Select delivery").setItems(names.toArray(new String[0]),(d,w)->deliveryOptions(ids.get(w))).show();
+                return true;
+            }
+        }
+        beginAddDelivery(point);return true;
+    }
+
     private void selectDelivery(int index,boolean longPress){
         try{
             JSONArray stops=deliveryRoute.getJSONArray("stops");JSONObject s=stops.getJSONObject(index);
@@ -288,9 +426,9 @@ public class MainActivity extends Activity {
             intent.putExtra("address",s.getString("address"));intent.putExtra("lat",String.valueOf(s.getDouble("lat")));intent.putExtra("lon",String.valueOf(s.getDouble("lon")));
             intent.putExtra("index",String.valueOf(index+1));intent.putExtra("route",deliveryRoute.getString("route"));intent.putExtra("date",deliveryRoute.optString("date",""));intent.putExtra("total",String.valueOf(stops.length()));
             if(!longPress){
-                nextStop=index+1;int y=deliveryRows.getChildAt(index*2).getTop();
+                nextStop=skipDeleted(stops,index+1);int y=deliveryRows.getChildAt(index*2).getTop();
                 prefs().edit().putInt("next_"+deliveryKey,nextStop).putInt("scroll_"+deliveryKey,y).apply();
-                for(int i=0;i<stops.length();i++)((LinearLayout)deliveryRows.getChildAt(i*2)).getChildAt(1).setBackgroundColor(i==nextStop?0xFF8DDC91:Color.WHITE);
+                for(int i=0;i<stops.length();i++)((LinearLayout)deliveryRows.getChildAt(i*2)).getChildAt(1).setBackgroundColor(stops.optJSONObject(i).optBoolean("deleted")?0xFFFCE1E1:i==nextStop?0xFF8DDC91:Color.WHITE);
                 deliveryScroll.scrollTo(0,y);
             }
             if(longPress||!prefs().getBoolean("native_nav",true))sendBroadcast(intent);else launchDestination(s);logDebug("LIST "+(longPress?"long":"tap")+" "+(index+1));
@@ -449,6 +587,7 @@ public class MainActivity extends Activity {
             startActivityForResult(pick, IMPORT_ROUTE);
         });
         controls.addView(slots);
+        Button editRoute=new Button(this);editRoute.setText("Undo / Restore route");controls.addView(editRoute);editRoute.setOnClickListener(v->routeEditMenu());
         showRegionButton = new Button(this);
         showRegionButton.setText("Show selected region (AFTER disconnecting)");
         showRegionButton.setEnabled(false);
@@ -555,7 +694,7 @@ public class MainActivity extends Activity {
             map.addOnCameraIdleListener(() -> {updateHouseDensity();saveView();});
             map.setMaxPitchPreference(0.0);
             readyMap=map;
-            map.addOnMapLongClickListener(point -> { beginAddDelivery(point); return true; });
+            map.addOnMapLongClickListener(point -> handleMapLongPress(point));
             mapView.addOnDidFailLoadingMapListener(error -> logDebug("MAP LOAD FAILURE "+error));
             mapView.addOnDidFinishLoadingMapListener(() -> logDebug("MAP LOAD FINISHED"));
             mapView.addOnDidFinishRenderingMapListener(full -> logDebug("MAP RENDER full="+full));
@@ -1405,6 +1544,7 @@ public class MainActivity extends Activity {
         android.util.AtomicFile file=RouteInstaller.file(this,slot);
         JSONObject route=RouteInstaller.validate(new String(file.readFully(),StandardCharsets.UTF_8));
         if(!route.toString().equals(original.toString()))throw new Exception("Route changed; select location again");
+        rememberEdit(route);
         JSONArray old=route.getJSONArray("stops"),stops=new JSONArray(),legs=new JSONArray();
         JSONArray preserved=originalLegs(route);
         for(int i=0;i<preserved.length();i++)if(preserved.getJSONObject(i).optBoolean("unrouted"))throw new Exception("Reinstall original office route before adding stops");
@@ -1467,7 +1607,7 @@ public class MainActivity extends Activity {
                 }
                 if(later) continue;
                 String icon="installed_stop_"+(i+1)+"_"+count;
-                readyStyle.addImage(icon,numberIcon(i+1,count,s.optBoolean("added")));
+                readyStyle.addImage(icon,numberIcon(i+1,count,stopColor(s,0xFF1A6DB3)));
                 Feature f=Feature.fromGeometry(checkedPoint(lat,lon));
                 f.addStringProperty("icon",icon);
                 f.addStringProperty("address",s.getString("address"));
@@ -1497,7 +1637,7 @@ public class MainActivity extends Activity {
                 }
             }
             for(int i=0;i<stops.length();i++){
-                JSONObject s=stops.getJSONObject(i);if(!s.optBoolean("added"))continue;
+                JSONObject s=stops.getJSONObject(i);if(s.optBoolean("deleted")||(!s.optBoolean("added")&&!s.optBoolean("relocated")))continue;
                 double lat=s.getDouble("lat"),lon=s.getDouble("lon");double[] hit=nearestLeg(legs,lat,lon);
                 if(hit[0]>=0&&hit[1]>10)unrouted.add(Feature.fromGeometry(LineString.fromLngLats(java.util.Arrays.asList(Point.fromLngLat(lon,lat),Point.fromLngLat(hit[3],hit[2])))));
             }
@@ -1518,7 +1658,8 @@ public class MainActivity extends Activity {
             }
             long meters=0,seconds=0; boolean timeKnown=true;
             for(int i=0;i<legs.length();i++){JSONObject summary=legs.getJSONObject(i).getJSONObject("summary");meters+=summary.getLong("lengthInMeters");long s=summary.optLong("travelTimeInSeconds",-1);if(s<0)timeKnown=false;else seconds+=s;}
-            status.setText(RouteInstaller.label(this,slot)+" • "+stops.length()+" stops");
+            int deleted=0;for(int i=0;i<stops.length();i++)if(stops.optJSONObject(i).optBoolean("deleted"))deleted++;
+            status.setText(RouteInstaller.label(this,slot)+" • "+(deleted==0?stops.length()+" stops":(stops.length()-deleted)+" active\n"+deleted+" deleted"));
             status.setGravity(Gravity.LEFT);
             long minutes=Math.round(seconds/60.0);
             mileage.setText((route.has("original_legs")?"Original: "+String.format(Locale.US,"%.1f mi",meters/1609.344):unrouted.isEmpty()?String.format(Locale.US,"%.1f mi",meters/1609.344):"Partial: "+String.format(Locale.US,"%.1f mi",meters/1609.344))+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
@@ -1547,11 +1688,12 @@ public class MainActivity extends Activity {
 
     private Bitmap numberIcon(int n) { return numberIcon(n,1); }
     private Bitmap numberIcon(int n,int count) { return numberIcon(n,count,false); }
-    private Bitmap numberIcon(int n,int count,boolean added) {
+    private Bitmap numberIcon(int n,int count,boolean added) {return numberIcon(n,count,added?0xFFE88A19:0xFF1A6DB3);}
+    private Bitmap numberIcon(int n,int count,int color) {
         Bitmap b = Bitmap.createBitmap(88, 88, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setColor(n==0?0xFF278344:added?0xFFE88A19:0xFF1A6DB3); c.drawCircle(44, 44, 39, p);
+        p.setColor(n==0?0xFF278344:color); c.drawCircle(44, 44, 39, p);
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(6);
         p.setColor(Color.WHITE); c.drawCircle(44, 44, 36, p);
         p.setStyle(Paint.Style.FILL); p.setColor(Color.WHITE);

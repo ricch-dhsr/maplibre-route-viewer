@@ -1497,7 +1497,7 @@ public class MainActivity extends Activity {
         JSONObject route = new JSONObject(raw);
         String slot = route.getString("route");
         if (!java.util.Arrays.asList(routeSlots).contains(slot)) throw new Exception("Expected AM, PM or EX");
-        if (!"tomtom".equals(route.getString("provider"))) throw new Exception("Expected TomTom provider");
+        if (!"tomtom".equals(route.getString("provider")) && !"here".equals(route.getString("provider"))) throw new Exception("Expected TomTom or HERE provider");
         JSONArray stops = route.getJSONArray("stops"), legs = route.getJSONArray("legs");
         if (stops.length()<1 || stops.length()>150 || legs.length()!=stops.length()+(route.has("shop")?1:-1))
             throw new Exception("Invalid stop or leg count");
@@ -1743,7 +1743,7 @@ public class MainActivity extends Activity {
             status.setText(RouteInstaller.label(this,slot)+" • "+(deleted==0?stops.length()+" stops":(stops.length()-deleted)+" active\n"+deleted+" deleted"));
             status.setGravity(Gravity.LEFT);
             long minutes=Math.round(seconds/60.0);
-            mileage.setText((route.has("original_legs")?"Original: "+String.format(Locale.US,"%.1f mi",meters/1609.344):unrouted.isEmpty()?String.format(Locale.US,"%.1f mi",meters/1609.344):"Partial: "+String.format(Locale.US,"%.1f mi",meters/1609.344))+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable"));
+            mileage.setText((route.has("original_legs")?"Original: "+String.format(Locale.US,"%.1f mi",meters/1609.344):unrouted.isEmpty()?String.format(Locale.US,"%.1f mi",meters/1609.344):"Partial: "+String.format(Locale.US,"%.1f mi",meters/1609.344))+"\n"+(timeKnown?(minutes/60>0?minutes/60+" hr ":"")+minutes%60+" min":"Time unavailable")+"\n"+("here".equals(route.optString("provider"))?"HERE":"TomTom"));
             populateDelivery(route,slot);
             saveView();
             logDebug("ROUTE "+slot+" stops="+stops.length()+" markers="+markers.size()+" points="+points);

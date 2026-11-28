@@ -164,17 +164,17 @@ public class MainActivity extends Activity {
     }
     private void renderDeliveryRows(int scroll){
         if(deliveryRoute==null)return;
-        JSONArray stops=deliveryRoute.optJSONArray("stops");
+        JSONArray stops=moveOriginal!=null?moveStops:deliveryRoute.optJSONArray("stops");
         deliveryRows.removeAllViews();
         for(int i=0;i<stops.length();i++){
             final int index=i;JSONObject stop=stops.optJSONObject(i);
             LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);
-            TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(stopColor(stop,0xFF34434F));number.setGravity(Gravity.CENTER);
+            TextView number=new TextView(this);number.setText(String.valueOf(i+1));number.setTextColor(Color.WHITE);number.setBackgroundColor(moveOriginal!=null&&i==moveIndex?0xFF8545B5:stopColor(stop,0xFF34434F));number.setGravity(Gravity.CENTER);
             row.addView(number,new LinearLayout.LayoutParams(dp(36),-1));wireGrab(number);
             TextView address=new TextView(this);address.setText(displayAddress(stop.optString("address")));address.setTextColor(Color.BLACK);
             address.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);address.setTextSize(fontSp);
             address.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);address.setPadding(dp(6),dp(6),dp(8),dp(6));address.setMinHeight(dp(rowDp));
-            address.setBackgroundColor(stop.optBoolean("deleted")?0xFFFCE1E1:i==nextStop?0xFF8DDC91:Color.WHITE);
+            address.setBackgroundColor(moveOriginal!=null&&i==moveIndex?0xFFE0C8F5:stop.optBoolean("deleted")?0xFFFCE1E1:moveOriginal==null&&i==nextStop?0xFF8DDC91:Color.WHITE);
             if(stop.optBoolean("deleted")){address.setTextColor(0xFFBC2222);address.setPaintFlags(address.getPaintFlags()|Paint.STRIKE_THRU_TEXT_FLAG);}
             row.addView(address,new LinearLayout.LayoutParams(0,-2,1));
             address.setOnClickListener(v->selectDelivery(index,false));
@@ -346,7 +346,86 @@ public class MainActivity extends Activity {
             saveEdited(route,stops,next);
         }catch(Exception e){editError(e);}
     }
+    private JSONObject moveOriginal;
+    private JSONArray moveStops;
+    private int moveFrom=-1,moveIndex=-1,moveScroll;
+    private LinearLayout moveBar;
+    private Button moveUp,moveDown;
+    private final android.os.Handler moveHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private void beginMove(int index){
+        if(moveOriginal!=null||relocatingRoute!=null||draftOriginal!=null)return;
+        try{
+            moveOriginal=deliveryRoute;moveStops=new JSONArray(deliveryRoute.getJSONArray("stops").toString());
+            moveFrom=moveIndex=index;moveScroll=deliveryScroll.getScrollY();
+            panelCollapsed=false;layoutDeliveryPanel();hideControls();
+            moveBar=new LinearLayout(this);moveBar.setBackgroundColor(0xFF34434F);
+            FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.LEFT);lp.bottomMargin=dp(65);
+            rootFrame.addView(moveBar,lp);
+            moveUp=new Button(this);moveUp.setText("↑");moveUp.setTextSize(26);moveBar.addView(moveUp);wireMoveArrow(moveUp,-1);
+            moveDown=new Button(this);moveDown.setText("↓");moveDown.setTextSize(26);moveBar.addView(moveDown);wireMoveArrow(moveDown,1);
+            Button save=new Button(this);save.setText("Save");moveBar.addView(save);save.setOnClickListener(v->finishMove(true));
+            Button cancel=new Button(this);cancel.setText("Cancel");moveBar.addView(cancel);cancel.setOnClickListener(v->finishMove(false));
+            previewMove();
+        }catch(Exception e){clearMove();editError(e);}
+    }
+    private void wireMoveArrow(Button b,int direction){
+        b.setOnClickListener(v->stepMove(direction));
+        b.setOnTouchListener(new android.view.View.OnTouchListener(){
+            boolean repeated;
+            final Runnable repeat=new Runnable(){public void run(){if(moveOriginal==null)return;repeated=true;stepMove(direction);if(moveIndex+direction>=0&&moveIndex+direction<moveStops.length())moveHandler.postDelayed(this,160);}};
+            public boolean onTouch(android.view.View v,android.view.MotionEvent e){
+                switch(e.getActionMasked()){
+                case android.view.MotionEvent.ACTION_DOWN:repeated=false;moveHandler.postDelayed(repeat,450);return false;
+                case android.view.MotionEvent.ACTION_UP:moveHandler.removeCallbacks(repeat);return repeated;
+                case android.view.MotionEvent.ACTION_CANCEL:moveHandler.removeCallbacks(repeat);return false;
+                }return false;
+            }
+        });
+    }
+    private void stepMove(int direction){
+        if(moveOriginal==null)return;
+        int target=moveIndex+direction;if(target<0||target>=moveStops.length())return;
+        try{Object a=moveStops.get(moveIndex),b=moveStops.get(target);moveStops.put(moveIndex,b);moveStops.put(target,a);moveIndex=target;previewMove();}catch(Exception e){editError(e);}
+    }
+    private void previewMove()throws Exception{
+        renderDeliveryRows(deliveryScroll.getScrollY());
+        final int selected=moveIndex;
+        deliveryScroll.post(()->{if(moveOriginal==null||moveIndex!=selected)return;android.view.View row=deliveryRows.getChildAt(selected*2);if(row!=null){int y=deliveryScroll.getScrollY();if(row.getTop()<y)deliveryScroll.scrollTo(0,row.getTop());else if(row.getBottom()>y+deliveryScroll.getHeight())deliveryScroll.scrollTo(0,row.getBottom()-deliveryScroll.getHeight());}});
+        updateMoveMarkers(moveStops,moveIndex);
+        moveUp.setEnabled(moveIndex>0);moveDown.setEnabled(moveIndex<moveStops.length()-1);
+    }
+    private void updateMoveMarkers(JSONArray stops,int selected)throws Exception{
+        if(readyStyle==null)return;
+        GeoJsonSource source=readyStyle.getSourceAs("stops-source");if(source==null)return;
+        List<Feature> markers=new ArrayList<>();
+        for(int i=0;i<stops.length();i++){
+            JSONObject s=stops.getJSONObject(i);double lat=s.getDouble("lat"),lon=s.getDouble("lon");
+            int count=1;boolean later=false,highlight=i==selected;
+            for(int j=0;j<stops.length();j++){if(j==i)continue;JSONObject other=stops.getJSONObject(j);if(lat==other.getDouble("lat")&&lon==other.getDouble("lon")){if(j<i)later=true;else count++;if(j==selected)highlight=true;}}
+            if(later)continue;
+            int color=highlight?0xFF8545B5:stopColor(s,0xFF1A6DB3);
+            String icon="move_stop_"+(i+1)+"_"+count+"_"+color;
+            readyStyle.addImage(icon,numberIcon(i+1,count,color));
+            Feature f=Feature.fromGeometry(checkedPoint(lat,lon));f.addStringProperty("icon",icon);f.addStringProperty("address",s.getString("address"));f.addNumberProperty("number",i+1);markers.add(f);
+        }
+        JSONObject shop=deliveryRoute.optJSONObject("shop");if(shop!=null){Feature f=Feature.fromGeometry(checkedPoint(shop.getDouble("lat"),shop.getDouble("lon")));f.addStringProperty("icon","shop_marker");markers.add(f);}
+        source.setGeoJson(FeatureCollection.fromFeatures(markers));
+    }
+    private void clearMove(){
+        moveHandler.removeCallbacksAndMessages(null);
+        if(moveBar!=null){rootFrame.removeView(moveBar);moveBar=null;}
+        moveOriginal=null;moveStops=null;moveFrom=moveIndex=-1;
+    }
+    private void finishMove(boolean save){
+        if(moveOriginal==null)return;
+        JSONObject expected=moveOriginal;int from=moveFrom,to=moveIndex,scroll=moveScroll;
+        clearMove();
+        try{updateMoveMarkers(expected.getJSONArray("stops"),-1);renderDeliveryRows(scroll);}catch(Exception e){editError(e);}
+        if(save&&from!=to)modifyStop(expected,from,"move",null,null,to);
+    }
+
     private void deliveryOptions(int index){
+        if(moveOriginal!=null)return;
         JSONObject expected=deliveryRoute;if(expected==null)return;
         JSONObject s=expected.optJSONArray("stops").optJSONObject(index);if(s==null)return;
         String[] options={"Navigate","Edit address","Change marker location","Move delivery in list",s.optBoolean("deleted")?"Restore delivery":"Remove delivery","Satellite view","Street view","Tasker options"};
@@ -362,9 +441,7 @@ public class MainActivity extends Activity {
                 draftResume.setOnClickListener(v->{relocatingRoute=null;relocatingIndex=-1;cancelDraft();});
                 Toast.makeText(this,"Long press the new marker location",Toast.LENGTH_LONG).show();
             }else if(w==3){
-                JSONArray stops=expected.optJSONArray("stops");List<String> choices=new ArrayList<>();choices.add("0 — Before first delivery");
-                for(int i=0;i<stops.length();i++)if(i!=index)choices.add((i+1)+" — "+stops.optJSONObject(i).optString("address"));
-                new android.app.AlertDialog.Builder(this).setTitle("Move delivery — Add after").setItems(choices.toArray(new String[0]),(a,b)->modifyStop(expected,index,"move",null,null,b)).setNegativeButton("Cancel",null).show();
+                beginMove(index);
             }else if(w==4){
                 if(s.optBoolean("deleted"))modifyStop(expected,index,"restore",null,null,0);
                 else new android.app.AlertDialog.Builder(this).setTitle("Remove delivery?").setItems(new String[]{"Permanently Remove","Leave and Mark Deleted"},(a,b)->{
@@ -379,6 +456,7 @@ public class MainActivity extends Activity {
         }).setNegativeButton("Cancel",null).show();
     }
     private void routeEditMenu(){
+        if(moveOriginal!=null)return;
         if(deliveryRoute==null)return;JSONObject expected=deliveryRoute;
         new android.app.AlertDialog.Builder(this).setTitle("Route changes").setItems(new String[]{"Undo last change","Restore original office route"},(d,w)->{
             if(w==0)restoreEdit(expected,false);
@@ -399,6 +477,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){editError(e);}
     }
     private boolean handleMapLongPress(LatLng point){
+        if(moveOriginal!=null)return true;
         if(relocatingRoute!=null){
             JSONObject expected=relocatingRoute;int index=relocatingIndex;relocatingRoute=null;relocatingIndex=-1;cancelDraft();
             if(expected==deliveryRoute)new android.app.AlertDialog.Builder(this).setMessage("Move marker to selected location?").setNegativeButton("Cancel",null).setPositiveButton("Move",(d,w)->modifyStop(expected,index,"location",null,point,0)).show();
@@ -419,6 +498,7 @@ public class MainActivity extends Activity {
     }
 
     private void selectDelivery(int index,boolean longPress){
+        if(moveOriginal!=null)return;
         try{
             JSONArray stops=deliveryRoute.getJSONArray("stops");JSONObject s=stops.getJSONObject(index);
             android.content.Intent intent=new android.content.Intent("com.routeviewer.maplibre."+(longPress?"LIST_LONG_PRESS":"LIST_TAP"));
@@ -664,7 +744,7 @@ public class MainActivity extends Activity {
         frame.addView(controls, new FrameLayout.LayoutParams(Math.min(dp(440),getResources().getDisplayMetrics().widthPixels), -2, Gravity.BOTTOM|Gravity.LEFT));
         LinearLayout floating=new LinearLayout(this);
         menuButton=new Button(this); menuButton.setText("Menu");
-        menuButton.setOnClickListener(v -> {controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
+        menuButton.setOnClickListener(v -> {if(moveOriginal!=null)return;controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
         floating.addView(menuButton);
         Button fit=new Button(this); fit.setText("Fit Route");
         fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {lockNorth();readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
@@ -1582,6 +1662,7 @@ public class MainActivity extends Activity {
     }
 
     private void showSavedRoute(String slot) {
+        if(moveOriginal!=null)clearMove();
         try {
             android.util.AtomicFile file=new android.util.AtomicFile(new java.io.File(getFilesDir(),"route_"+slot+".json"));
             JSONObject route=RouteInstaller.validate(new String(file.readFully(),StandardCharsets.UTF_8));
@@ -1908,6 +1989,7 @@ public class MainActivity extends Activity {
         }
     }
 
+    @Override public void onBackPressed(){if(moveOriginal!=null){finishMove(false);return;}super.onBackPressed();}
     @Override protected void onStart() { super.onStart(); mapView.onStart(); }
     private final android.content.BroadcastReceiver routeChanged=new android.content.BroadcastReceiver(){
  @Override public void onReceive(Context c,android.content.Intent i){refreshSlotLabels();if(i.getStringExtra("route").equals(pendingSlot))showSavedRoute(pendingSlot);}
@@ -1916,7 +1998,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() { super.onResume(); hideFloating(); mapView.onResume(); refreshSlotLabels(); }
     @Override protected void onPause() { saveView();if(deliveryRoute!=null&&!panelCollapsed)prefs().edit().putInt("scroll_"+deliveryKey,deliveryScroll.getScrollY()).apply(); mapView.onPause(); super.onPause(); }
     @Override protected void onStop() { mapView.onStop(); super.onStop(); }
-    @Override protected void onDestroy() { hideFloating(); navHandler.removeCallbacksAndMessages(null); retryHandler.removeCallbacksAndMessages(null); if(downloading && offlineRegion!=null){activeRegionIndex=-1;offlineRegion.setDownloadState(OfflineRegion.STATE_INACTIVE);} unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
+    @Override protected void onDestroy() { clearMove(); hideFloating(); navHandler.removeCallbacksAndMessages(null); retryHandler.removeCallbacksAndMessages(null); if(downloading && offlineRegion!=null){activeRegionIndex=-1;offlineRegion.setDownloadState(OfflineRegion.STATE_INACTIVE);} unregisterReceiver(routeChanged); mapView.onDestroy(); super.onDestroy(); }
     @Override public void onLowMemory() { super.onLowMemory(); mapView.onLowMemory(); }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); mapView.onSaveInstanceState(state);

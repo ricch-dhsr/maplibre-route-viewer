@@ -13,7 +13,7 @@ public class RouteInstaller extends BroadcastReceiver {
  static JSONObject validate(String raw)throws Exception{
  JSONObject j=new JSONObject(raw);String slot=j.getString("route");
  if(!slot.equals("AM")&&!slot.equals("PM")&&!slot.equals("EX"))throw new Exception("Invalid slot");
- if(!"tomtom".equals(j.getString("provider")))throw new Exception("Invalid provider");
+ if(!"tomtom".equals(j.getString("provider"))&&!"here".equals(j.getString("provider")))throw new Exception("Invalid provider");
  if(j.has("date"))LocalDate.parse(j.getString("date"));
  JSONArray stops=j.getJSONArray("stops"),legs=j.getJSONArray("legs");
  JSONObject shop=j.optJSONObject("shop");

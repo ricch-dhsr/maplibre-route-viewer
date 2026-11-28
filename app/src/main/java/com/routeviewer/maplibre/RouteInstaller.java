@@ -41,7 +41,7 @@ public class RouteInstaller extends BroadcastReceiver {
  ByteArrayOutputStream bytes=new ByteArrayOutputStream();
  try(InputStream in=c.getContentResolver().openInputStream(uri)){if(in==null)throw new Exception("Cannot open file");byte[] b=new byte[8192];int n;while((n=in.read(b))!=-1){if(bytes.size()+n>8*1024*1024)throw new Exception("File too large");bytes.write(b,0,n);}}
  JSONObject j=validate(bytes.toString("UTF-8"));slot=j.getString("route");date=j.getString("date");if(j.optJSONObject("shop")==null)throw new Exception("Shop required for automatic installation");
- AtomicFile f=file(c,slot);FileOutputStream out=f.startWrite();try{out.write(bytes.toByteArray());f.finishWrite(out);}catch(Exception e){f.failWrite(out);throw e;}ok=true;
+ synchronized(RouteInstaller.class){AtomicFile f=file(c,slot);FileOutputStream out=f.startWrite();try{out.write(bytes.toByteArray());f.finishWrite(out);}catch(Exception e){f.failWrite(out);throw e;}}ok=true;
  }catch(Exception e){error=e.toString();}
  finally{try{Intent ack=new Intent("com.routeviewer.maplibre.ROUTE_INSTALLED");ack.setPackage("net.dinglisch.android.taskerm");ack.putExtra("success",Boolean.toString(ok));ack.putExtra("route",slot);ack.putExtra("date",date);ack.putExtra("error",error.isEmpty()?"none":error);ack.putExtra("request_id",intent.getStringExtra("request_id"));c.sendBroadcast(ack);Intent changed=new Intent("com.routeviewer.maplibre.ROUTE_CHANGED").setPackage(c.getPackageName());changed.putExtra("route",slot);if(ok)c.sendBroadcast(changed);}finally{pending.finish();}}
  }).start();

@@ -9,8 +9,8 @@ android {
         applicationId 'com.routeviewer.maplibre'
         minSdk 26
         targetSdk 28
-        versionCode 24
-        versionName "1.4.22"
+        versionCode 25
+        versionName "1.4.23"
     }
     signingConfigs {
         persistent {

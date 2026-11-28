@@ -8,7 +8,16 @@ import java.time.LocalDate;
 public class RouteInstaller extends BroadcastReceiver {
  public static final String ACTION="com.routeviewer.maplibre.INSTALL_ROUTE";
  static AtomicFile file(Context c,String slot){return new AtomicFile(new File(c.getFilesDir(),"route_"+slot+".json"));}
- static String label(Context c,String slot){try{JSONObject j=new JSONObject(new String(file(c,slot).readFully(),StandardCharsets.UTF_8));return slot+"-"+LocalDate.parse(j.getString("date")).getDayOfMonth();}catch(Exception e){return slot;}}
+ static String label(Context c,String slot){
+ try{
+ JSONObject j=new JSONObject(new String(file(c,slot).readFully(),StandardCharsets.UTF_8));
+ LocalDate date=LocalDate.parse(j.getString("date"));
+ String fallback=slot+"-"+date.getDayOfMonth();
+ java.util.regex.Matcher m=java.util.regex.Pattern.compile("^(.+?)\\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\s+"+slot+"(?:\\s|$)",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(j.optString("list_name","").trim());
+ if(!m.find())return fallback;
+ return m.group(1).trim()+" "+date.format(java.time.format.DateTimeFormatter.ofPattern("EEE",java.util.Locale.US))+" "+fallback;
+ }catch(Exception e){return slot;}
+ }
  static void point(double lat,double lon)throws Exception{if(!Double.isFinite(lat)||!Double.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180)throw new Exception("Invalid coordinate");}
  static JSONObject validate(String raw)throws Exception{
  JSONObject j=new JSONObject(raw);String slot=j.getString("route");

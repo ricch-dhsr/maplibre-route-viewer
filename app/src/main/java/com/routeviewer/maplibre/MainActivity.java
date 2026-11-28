@@ -544,6 +544,7 @@ public class MainActivity extends Activity {
     private String pendingSlot;
     private LinearLayout controls, maintenance;
     private Button menuButton;
+    private Runnable menuButtonReset;
     private final StringBuilder debugLog = new StringBuilder();
     private boolean reloading;
     private org.maplibre.android.camera.CameraPosition reloadCamera;
@@ -650,16 +651,17 @@ public class MainActivity extends Activity {
         showRouteButton.setEnabled(false);
         // Demo route is no longer exposed in the UI.
         LinearLayout slots = new LinearLayout(this);
+        slots.setOrientation(LinearLayout.VERTICAL);
         for (String slot : routeSlots) {
             Button b = new Button(this);
             slotButtons.put(slot,b);
             b.setText(RouteInstaller.label(this,slot));
-            slots.addView(b, new LinearLayout.LayoutParams(0,-2,1));
+            slots.addView(b, new LinearLayout.LayoutParams(-1,-2));
             b.setOnClickListener(v -> showSavedRoute(slot));
         }
         Button importButton = new Button(this);
         importButton.setText("Import");
-        slots.addView(importButton, new LinearLayout.LayoutParams(0,-2,1));
+        maintenance.addView(importButton);
         importButton.setOnClickListener(v -> {
             android.content.Intent pick = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
             pick.addCategory(android.content.Intent.CATEGORY_OPENABLE);
@@ -667,7 +669,7 @@ public class MainActivity extends Activity {
             startActivityForResult(pick, IMPORT_ROUTE);
         });
         controls.addView(slots);
-        Button editRoute=new Button(this);editRoute.setText("Undo / Restore route");controls.addView(editRoute);editRoute.setOnClickListener(v->routeEditMenu());
+        Button editRoute=new Button(this);editRoute.setText("Undo / Restore route");maintenance.addView(editRoute);editRoute.setOnClickListener(v->routeEditMenu());
         showRegionButton = new Button(this);
         showRegionButton.setText("Show selected region (AFTER disconnecting)");
         showRegionButton.setEnabled(false);
@@ -708,7 +710,7 @@ public class MainActivity extends Activity {
         allButton = new Button(this);
         allButton.setText("Download all Massachusetts");
         allButton.setEnabled(false);
-        controls.addView(allButton);
+        maintenance.addView(allButton);
         allButton.setOnClickListener(v -> {
             if (!regionsReady || downloading || downloadAll) return;
             downloadAll = true;
@@ -717,23 +719,16 @@ public class MainActivity extends Activity {
             regionPicker.setSelection(FIRST_STATE_REGION);
             startOfflineDownload();
         });
-        LinearLayout tools = new LinearLayout(this);
-        for(String name:new String[]{"Reload Map","Maintenance","Hide"}) {
-            Button b=new Button(this); b.setText(name);
-            tools.addView(b,new LinearLayout.LayoutParams(0,-2,1));
-            b.setOnClickListener(v -> {
-                if(name.equals("Reload Map")) reloadMap();
-                else if(name.equals("Maintenance")) maintenance.setVisibility(maintenance.getVisibility()==android.view.View.VISIBLE?android.view.View.GONE:android.view.View.VISIBLE);
-                else hideControls();
-            });
-        }
-        controls.addView(tools);
+        Button reload=new Button(this);reload.setText("Reload Map");maintenance.addView(reload);reload.setOnClickListener(v->reloadMap());
+        Button display=new Button(this);display.setText("Display settings");maintenance.addView(display);display.setOnClickListener(v->showMarkerSettings());
         Button settings=new Button(this); settings.setText("Settings");
-        settings.setOnClickListener(v -> showMarkerSettings()); controls.addView(settings);
+        settings.setOnClickListener(v -> {slots.setVisibility(android.view.View.GONE);settings.setVisibility(android.view.View.GONE);maintenance.setVisibility(android.view.View.VISIBLE);}); controls.addView(settings);
+        Button back=new Button(this);back.setText("Back to routes");maintenance.addView(back,0);back.setOnClickListener(v->{maintenance.setVisibility(android.view.View.GONE);slots.setVisibility(android.view.View.VISIBLE);settings.setVisibility(android.view.View.VISIBLE);});
+        menuButtonReset = () -> {maintenance.setVisibility(android.view.View.GONE);slots.setVisibility(android.view.View.VISIBLE);settings.setVisibility(android.view.View.VISIBLE);};
         Button exportButton=new Button(this); exportButton.setText("Export Debug Log / Database Diagnostics");
         exportButton.setOnClickListener(v -> exportDebug()); maintenance.addView(exportButton);
         controls.addView(maintenance);
-        controls.addView(offlineStatus);
+        maintenance.addView(offlineStatus);
         regionPicker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent,
                     android.view.View view, int position, long id) {
@@ -744,7 +739,7 @@ public class MainActivity extends Activity {
         frame.addView(controls, new FrameLayout.LayoutParams(Math.min(dp(440),getResources().getDisplayMetrics().widthPixels), -2, Gravity.BOTTOM|Gravity.LEFT));
         LinearLayout floating=new LinearLayout(this);
         menuButton=new Button(this); menuButton.setText("Menu");
-        menuButton.setOnClickListener(v -> {if(moveOriginal!=null)return;controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
+        menuButton.setOnClickListener(v -> {if(moveOriginal!=null)return;if(menuButtonReset!=null)menuButtonReset.run();controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
         floating.addView(menuButton);
         Button fit=new Button(this); fit.setText("Fit Route");
         fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {lockNorth();readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});

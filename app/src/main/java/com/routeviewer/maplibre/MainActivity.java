@@ -545,6 +545,9 @@ public class MainActivity extends Activity {
     private LinearLayout controls, maintenance;
     private Button menuButton;
     private Runnable menuButtonReset;
+    private TextView menuDate;
+    private Button deleteExButton;
+    private boolean dismissMenuGesture;
     private final StringBuilder debugLog = new StringBuilder();
     private boolean reloading;
     private org.maplibre.android.camera.CameraPosition reloadCamera;
@@ -652,12 +655,14 @@ public class MainActivity extends Activity {
         // Demo route is no longer exposed in the UI.
         LinearLayout slots = new LinearLayout(this);
         slots.setOrientation(LinearLayout.VERTICAL);
+        menuDate=new TextView(this);menuDate.setTextColor(Color.WHITE);menuDate.setGravity(Gravity.CENTER);menuDate.setTextSize(18);menuDate.setTypeface(null,android.graphics.Typeface.BOLD);menuDate.setPadding(0,dp(8),0,dp(8));slots.addView(menuDate);
         for (String slot : routeSlots) {
             Button b = new Button(this);
             slotButtons.put(slot,b);
             b.setText(RouteInstaller.label(this,slot));
+            styleMenuButton(b);
             slots.addView(b, new LinearLayout.LayoutParams(-1,-2));
-            b.setOnClickListener(v -> showSavedRoute(slot));
+            b.setOnClickListener(v -> {hideControls();showSavedRoute(slot);});
         }
         Button importButton = new Button(this);
         importButton.setText("Import");
@@ -721,10 +726,12 @@ public class MainActivity extends Activity {
         });
         Button reload=new Button(this);reload.setText("Reload Map");maintenance.addView(reload);reload.setOnClickListener(v->reloadMap());
         Button display=new Button(this);display.setText("Display settings");maintenance.addView(display);display.setOnClickListener(v->showMarkerSettings());
-        Button settings=new Button(this); settings.setText("Settings");
+        Button settings=new Button(this); settings.setText("Settings");styleMenuButton(settings);
         settings.setOnClickListener(v -> {slots.setVisibility(android.view.View.GONE);settings.setVisibility(android.view.View.GONE);maintenance.setVisibility(android.view.View.VISIBLE);}); controls.addView(settings);
         Button back=new Button(this);back.setText("Back to routes");maintenance.addView(back,0);back.setOnClickListener(v->{maintenance.setVisibility(android.view.View.GONE);slots.setVisibility(android.view.View.VISIBLE);settings.setVisibility(android.view.View.VISIBLE);});
         menuButtonReset = () -> {maintenance.setVisibility(android.view.View.GONE);slots.setVisibility(android.view.View.VISIBLE);settings.setVisibility(android.view.View.VISIBLE);};
+        deleteExButton=new Button(this);deleteExButton.setText("Delete EX Route");maintenance.addView(deleteExButton);
+        deleteExButton.setOnClickListener(v->new android.app.AlertDialog.Builder(this).setTitle("Delete EX route?").setMessage("This removes the saved EX route from this tablet.").setNegativeButton("Cancel",null).setPositiveButton("Delete",(d,w)->{deleteEx(false);refreshSlotLabels();}).show());
         Button exportButton=new Button(this); exportButton.setText("Export Debug Log / Database Diagnostics");
         exportButton.setOnClickListener(v -> exportDebug()); maintenance.addView(exportButton);
         controls.addView(maintenance);
@@ -739,7 +746,7 @@ public class MainActivity extends Activity {
         frame.addView(controls, new FrameLayout.LayoutParams(Math.min(dp(440),getResources().getDisplayMetrics().widthPixels), -2, Gravity.BOTTOM|Gravity.LEFT));
         LinearLayout floating=new LinearLayout(this);
         menuButton=new Button(this); menuButton.setText("Menu");
-        menuButton.setOnClickListener(v -> {if(moveOriginal!=null)return;if(menuButtonReset!=null)menuButtonReset.run();controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
+        menuButton.setOnClickListener(v -> {if(moveOriginal!=null)return;refreshSlotLabels();if(menuButtonReset!=null)menuButtonReset.run();controls.setVisibility(android.view.View.VISIBLE); floating.setVisibility(android.view.View.GONE);});
         floating.addView(menuButton);
         Button fit=new Button(this); fit.setText("Fit Route");
         fit.setOnClickListener(v -> {if(readyMap!=null && routeBounds!=null) try {lockNorth();readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(routeBounds,90));} catch(Exception e){logDebug("Fit error "+e);}});
@@ -753,6 +760,7 @@ public class MainActivity extends Activity {
         String savedSlot=prefs().getString("view_slot","");
         if(java.util.Arrays.asList(routeSlots).contains(savedSlot))pendingSlot=savedSlot;
         setContentView(frame);
+        refreshSlotLabels();
         downloadButton.setOnClickListener(v -> startOfflineDownload());
 
         mapView.onCreate(saved);
@@ -1987,9 +1995,46 @@ public class MainActivity extends Activity {
     @Override public void onBackPressed(){if(moveOriginal!=null){finishMove(false);return;}super.onBackPressed();}
     @Override protected void onStart() { super.onStart(); mapView.onStart(); }
     private final android.content.BroadcastReceiver routeChanged=new android.content.BroadcastReceiver(){
- @Override public void onReceive(Context c,android.content.Intent i){refreshSlotLabels();if(i.getStringExtra("route").equals(pendingSlot))showSavedRoute(pendingSlot);}
+ @Override public void onReceive(Context c,android.content.Intent i){refreshSlotLabels();if(java.util.Objects.equals(i.getStringExtra("route"),pendingSlot)&&pendingSlot!=null)showSavedRoute(pendingSlot);}
  };
- private void refreshSlotLabels(){for(String s:routeSlots){Button b=slotButtons.get(s);if(b!=null)b.setText(RouteInstaller.label(this,s));}}
+ private void styleMenuButton(Button b){b.setMinHeight(dp(72));b.setTextSize(20);b.setTypeface(null,android.graphics.Typeface.BOLD);}
+ @Override public boolean dispatchTouchEvent(android.view.MotionEvent e){
+     int action=e.getActionMasked();
+     if(action==android.view.MotionEvent.ACTION_DOWN){
+         dismissMenuGesture=false;
+         if(controls!=null&&controls.isShown()){
+             android.graphics.Rect rect=new android.graphics.Rect();controls.getGlobalVisibleRect(rect);
+             if(!rect.contains((int)e.getRawX(),(int)e.getRawY())){hideControls();dismissMenuGesture=true;}
+         }
+     }
+     if(dismissMenuGesture){if(action==android.view.MotionEvent.ACTION_UP||action==android.view.MotionEvent.ACTION_CANCEL)dismissMenuGesture=false;return true;}
+     return super.dispatchTouchEvent(e);
+ }
+ private boolean hasRoute(String slot){return RouteInstaller.file(this,slot).getBaseFile().isFile();}
+ private void deleteEx(boolean expiredOnly){
+     android.util.AtomicFile f=RouteInstaller.file(this,"EX");
+     synchronized(RouteInstaller.class){
+         java.io.File base=f.getBaseFile();
+         if(!base.isFile())return;
+         long modified=base.lastModified();
+         if(expiredOnly&&(modified<=0||System.currentTimeMillis()-modified<=7L*24*60*60*1000))return;
+         f.delete();
+         if(base.exists())return;
+     }
+     if("EX".equals(pendingSlot)){
+         if(moveOriginal!=null)clearMove();
+         cancelDraft();
+         pendingSlot=hasRoute("AM")?"AM":hasRoute("PM")?"PM":null;
+         if(pendingSlot!=null)showSavedRoute(pendingSlot);
+         else{if(readyStyle!=null)clearRouteLayers(readyStyle);routeBounds=null;deliveryRoute=null;deliveryRows.removeAllViews();status.setText("No route selected");mileage.setText("");saveView();}
+     }
+ }
+ private void refreshSlotLabels(){
+     deleteEx(true);
+     if(menuDate!=null)menuDate.setText(java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d",java.util.Locale.US)));
+     for(String s:routeSlots){Button b=slotButtons.get(s);if(b!=null){b.setText(RouteInstaller.label(this,s));if("EX".equals(s))b.setVisibility(hasRoute(s)?android.view.View.VISIBLE:android.view.View.GONE);}}
+     if(deleteExButton!=null)deleteExButton.setVisibility(hasRoute("EX")?android.view.View.VISIBLE:android.view.View.GONE);
+ }
     @Override protected void onResume() { super.onResume(); hideFloating(); mapView.onResume(); refreshSlotLabels(); }
     @Override protected void onPause() { saveView();if(deliveryRoute!=null&&!panelCollapsed)prefs().edit().putInt("scroll_"+deliveryKey,deliveryScroll.getScrollY()).apply(); mapView.onPause(); super.onPause(); }
     @Override protected void onStop() { mapView.onStop(); super.onStop(); }
